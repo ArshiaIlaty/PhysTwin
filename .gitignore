@@ -210,3 +210,13 @@ cython_debug/
 !assets/arrow_fill_v1.png
 !assets/Picture1.png
 !assets/Picture2.png
+
+# Local experiment artifacts (regeneratable)
+_downloads/
+dataset/
+dataset_v2/
+dataset_smoke/
+dataset_synth_raw/
+models_*/
+figures/
+slurm/logs/
