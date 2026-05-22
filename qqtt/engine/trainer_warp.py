@@ -13,7 +13,7 @@ import warp as wp
 from scipy.spatial import KDTree
 import pickle
 import cv2
-from pynput import keyboard
+# pynput's keyboard module needs an X display on import; lazy-imported in interactive_playground.
 import pyrender
 import trimesh
 import matplotlib.pyplot as plt
@@ -1070,6 +1070,7 @@ class InvPhyTrainerWarp:
             self.virtual_keys = {}     # Dictionary to track virtual keys with timestamps
             self.virtual_key_duration = 0.03  # Virtual key press duration in seconds
         
+        from pynput import keyboard  # X-dependent; lazy-imported (top-level import would break headless jobs)
         listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         listener.start()
         self.target_change = np.zeros((n_ctrl_parts, 3))
@@ -1752,6 +1753,129 @@ class InvPhyTrainerWarp:
             # cv2.waitKey(0)
         vis.destroy_window()
         video_writer.release()
+
+    def extract_force_data(self, model_path, n_ctrl_parts=1):
+        """Run inference simulation and return per-timestep object-particle
+        positions and net control-point forces, without rendering.
+
+        Returns:
+            positions:        np.ndarray [T, N_all_points, 3] (simulated object particles)
+            forces:           np.ndarray [T, n_ctrl_parts, 3] (net wrench at each ctrl group)
+            controller_pos:   np.ndarray [T, N_ctrl, 3]
+            meta: dict with num_all_points, n_ctrl_parts, frame_len
+        """
+        logger.info(f"[extract_force_data] Load model from {model_path}")
+        checkpoint = torch.load(model_path, map_location=cfg.device)
+
+        spring_Y = checkpoint["spring_Y"]
+        collide_elas = checkpoint["collide_elas"]
+        collide_fric = checkpoint["collide_fric"]
+        collide_object_elas = checkpoint["collide_object_elas"]
+        collide_object_fric = checkpoint["collide_object_fric"]
+        num_object_springs = checkpoint["num_object_springs"]
+
+        assert (
+            len(spring_Y) == self.simulator.n_springs
+        ), "Checkpoint spring count must match the current simulator config"
+
+        self.simulator.set_spring_Y(torch.log(spring_Y).detach().clone())
+        self.simulator.set_collide(
+            collide_elas.detach().clone(), collide_fric.detach().clone()
+        )
+        self.simulator.set_collide_object(
+            collide_object_elas.detach().clone(),
+            collide_object_fric.detach().clone(),
+        )
+
+        first_frame_controller_points = self.simulator.controller_points[0]
+        if n_ctrl_parts == 1:
+            force_indexes = [
+                torch.arange(first_frame_controller_points.shape[0], device=cfg.device)
+            ]
+        else:
+            kmeans = KMeans(n_clusters=n_ctrl_parts, random_state=0, n_init=10)
+            cluster_labels = kmeans.fit_predict(
+                first_frame_controller_points.cpu().numpy()
+            )
+            force_indexes = [
+                torch.tensor(np.where(cluster_labels == i)[0], device=cfg.device)
+                for i in range(n_ctrl_parts)
+            ]
+
+        control_springs = self.init_springs[num_object_springs:]
+        force_springs, force_object_points, force_rest_lengths, force_spring_Y = (
+            [],
+            [],
+            [],
+            [],
+        )
+        for i in range(n_ctrl_parts):
+            fs, fop, frl, fsy = [], [], [], []
+            for j in range(len(control_springs)):
+                if (control_springs[j][0] - self.num_all_points) in force_indexes[i]:
+                    fs.append(control_springs[j])
+                    frl.append(self.init_rest_lengths[j + num_object_springs])
+                    fsy.append(spring_Y[j + num_object_springs])
+                    fop.append(control_springs[j][1])
+            fs = torch.vstack(fs)
+            fs[:, 0] -= self.num_all_points
+            force_springs.append(fs)
+            force_rest_lengths.append(torch.tensor(frl, device=cfg.device))
+            force_spring_Y.append(torch.tensor(fsy, device=cfg.device))
+            force_object_points.append(torch.tensor(fop, device=cfg.device))
+
+        frame_len = self.dataset.frame_len
+        self.simulator.set_init_state(
+            self.simulator.wp_init_vertices, self.simulator.wp_init_velocities
+        )
+
+        positions = np.empty((frame_len, self.num_all_points, 3), dtype=np.float32)
+        forces = np.empty((frame_len, n_ctrl_parts, 3), dtype=np.float32)
+
+        def _ctrl_forces(x_now, frame_idx):
+            out = np.empty((n_ctrl_parts, 3), dtype=np.float32)
+            for j in range(n_ctrl_parts):
+                fv = self.get_force_vector(
+                    x_now,
+                    force_springs[j],
+                    force_rest_lengths[j],
+                    force_spring_Y[j],
+                    self.num_all_points,
+                    self.simulator.controller_points[frame_idx],
+                )
+                out[j] = fv.detach().cpu().numpy()
+            return out
+
+        prev_x = wp.to_torch(
+            self.simulator.wp_states[0].wp_x, requires_grad=False
+        ).clone()
+        positions[0] = prev_x.detach().cpu().numpy()
+        forces[0] = _ctrl_forces(prev_x, 0)
+
+        for i in tqdm(range(1, frame_len), desc="extract_force_data"):
+            if cfg.data_type == "real":
+                self.simulator.set_controller_target(i, pure_inference=True)
+            if self.simulator.object_collision_flag:
+                self.simulator.update_collision_graph()
+
+            wp.capture_launch(self.simulator.forward_graph)
+            x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
+            self.simulator.set_init_state(
+                self.simulator.wp_states[-1].wp_x,
+                self.simulator.wp_states[-1].wp_v,
+            )
+            torch.cuda.synchronize()
+
+            positions[i] = x.detach().cpu().numpy()
+            forces[i] = _ctrl_forces(x, i)
+
+        controller_pos = self.simulator.controller_points.detach().cpu().numpy()
+        meta = {
+            "num_all_points": int(self.num_all_points),
+            "n_ctrl_parts": int(n_ctrl_parts),
+            "frame_len": int(frame_len),
+        }
+        return positions, forces, controller_pos, meta
 
     def get_force_vector(
         self, x, springs, rest_lengths, spring_Y, num_object_points, controller_points
