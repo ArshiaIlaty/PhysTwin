@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(/share/crsp/lab/selmalak/mgamalel/**)",
+      "Read(/pub/mgamalel/envs/**)",
+      "Edit(/share/crsp/lab/selmalak/mgamalel/**)"
+    ]
+  }
+}
