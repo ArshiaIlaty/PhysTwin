@@ -7,10 +7,11 @@
 #SBATCH --mem=24G
 #SBATCH --time=01:30:00
 #SBATCH --chdir=/share/crsp/lab/selmalak/mgamalel/PhysTwin/phystwin_src
-#SBATCH --output=slurm/logs/smoke_%j.out
-#SBATCH --error=slurm/logs/smoke_%j.err
+#SBATCH --output=my_work/results/slurm_logs/smoke_%j.out
+#SBATCH --error=my_work/results/slurm_logs/smoke_%j.err
 
-exec > >(tee -a "slurm/logs/smoke_${SLURM_JOB_ID}.out") 2> >(tee -a "slurm/logs/smoke_${SLURM_JOB_ID}.err" >&2)
+mkdir -p my_work/results/slurm_logs
+exec > >(tee -a "my_work/results/slurm_logs/smoke_${SLURM_JOB_ID}.out") 2> >(tee -a "my_work/results/slurm_logs/smoke_${SLURM_JOB_ID}.err" >&2)
 
 echo "[$(date)] before set -e"
 echo "PWD=$(pwd)  HOST=$(hostname)"
@@ -38,7 +39,7 @@ python -c "from qqtt import InvPhyTrainerWarp; print('qqtt import OK')" || echo 
 
 set +x
 echo "=== Smoke-test: extract_dataset on single_push_rope_1 ==="
-python extract_dataset.py --case_name single_push_rope_1 --n_ctrl_parts 1 --cfg_type real --out_dir dataset_smoke
-ls -la dataset_smoke/
+python my_work/code/extract_dataset.py --case_name single_push_rope_1 --n_ctrl_parts 1 --cfg_type real --out_dir my_work/results/dataset_smoke
+ls -la my_work/results/dataset_smoke/
 
 echo "[$(date)] DONE"

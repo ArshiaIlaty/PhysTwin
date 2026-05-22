@@ -30,6 +30,16 @@ Review: Documented donor cases, synthetic controller motion patterns, sanity
 gates, saved schema, and why synthetic trajectories address cross-case data
 scarcity.
 
+## 2026-05-21: Explain simulator capabilities and project directions
+- [x] Inspect simulator/control code paths in `phystwin_src`.
+- [x] Identify what can be controlled directly versus only inferred/extracted.
+- [x] Summarize feasible project directions built on the simulator.
+- [x] Add the explanation to `tasks/experiment_explanation.md`.
+
+Review: Added a simulator-capabilities section explaining position-controlled
+gripper actuation, spring-derived forces, current outputs, direct-force
+limitations, and recommended project directions.
+
 ## Locked decisions (2026-05-20)
 - **ML target**: net wrench at control points `[T, n_ctrl_parts, 3]`.
 - **Features**: fixed-dim summary statistics over particles (centroid disp, bbox deformation, max/mean per-axis disp, kinetic-energy-like terms). Generalizes across rope/cloth/sloth despite varying `N_particles`.

@@ -24,6 +24,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+
 
 class ForceMLP(nn.Module):
     """Must match train_models.ForceMLP exactly."""
@@ -201,10 +203,10 @@ def feature_correlation(cases, out_path: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_dir", type=str, default="dataset")
-    parser.add_argument("--cross_dir", type=str, default="models_cross_case")
-    parser.add_argument("--within_dir", type=str, default="models_within_case")
-    parser.add_argument("--fig_dir", type=str, default="figures")
+    parser.add_argument("--dataset_dir", type=str, default=str(_RESULTS_DIR / "dataset"))
+    parser.add_argument("--cross_dir", type=str, default=str(_RESULTS_DIR / "models_cross_case"))
+    parser.add_argument("--within_dir", type=str, default=str(_RESULTS_DIR / "models_within_case"))
+    parser.add_argument("--fig_dir", type=str, default=str(_RESULTS_DIR / "figures"))
     args = parser.parse_args()
     os.makedirs(args.fig_dir, exist_ok=True)
 

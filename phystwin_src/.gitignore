@@ -213,10 +213,4 @@ cython_debug/
 
 # Local experiment artifacts (regeneratable)
 _downloads/
-dataset/
-dataset_v2/
-dataset_smoke/
-dataset_synth_raw/
-models_*/
-figures/
-slurm/logs/
+my_work/results/

@@ -7,11 +7,11 @@
 #SBATCH --mem=24G
 #SBATCH --time=01:30:00
 #SBATCH --chdir=/share/crsp/lab/selmalak/mgamalel/PhysTwin/phystwin_src
-#SBATCH --output=slurm/logs/smoke_%j.out
-#SBATCH --error=slurm/logs/smoke_%j.err
+#SBATCH --output=my_work/results/slurm_logs/smoke_%j.out
+#SBATCH --error=my_work/results/slurm_logs/smoke_%j.err
 
 set -e
-mkdir -p slurm/logs dataset_smoke
+mkdir -p my_work/results/slurm_logs my_work/results/dataset_smoke
 
 # Module init
 if [ -f /etc/profile.d/modules.sh ]; then
@@ -37,8 +37,8 @@ CASE=${CASE:-single_push_rope_1}
 NCTRL=${NCTRL:-1}
 
 echo "=== Smoke-test: extract_dataset on $CASE (no rendering) ==="
-python extract_dataset.py --case_name "$CASE" --n_ctrl_parts "$NCTRL" --cfg_type real --out_dir dataset_smoke
-ls -la dataset_smoke/
-python inspect_data.py --dataset_dir dataset_smoke
+python my_work/code/extract_dataset.py --case_name "$CASE" --n_ctrl_parts "$NCTRL" --cfg_type real --out_dir my_work/results/dataset_smoke
+ls -la my_work/results/dataset_smoke/
+python my_work/code/inspect_data.py --dataset_dir my_work/results/dataset_smoke
 
 echo "[$(date)] DONE"

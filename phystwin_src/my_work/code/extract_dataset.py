@@ -21,6 +21,8 @@ import torch
 from qqtt import InvPhyTrainerWarp
 from qqtt.utils import cfg, logger
 
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+
 
 # Cases we want to extract. The 3rd column ("real" vs "cloth") picks the cfg yaml.
 # n_ctrl_parts is inferred from the case_name prefix (single_ -> 1, double_ -> 2;
@@ -224,7 +226,7 @@ def _object_category(case_name: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_path", type=str, default="./data/different_types")
-    parser.add_argument("--out_dir", type=str, default="./dataset")
+    parser.add_argument("--out_dir", type=str, default=str(_RESULTS_DIR / "dataset"))
     parser.add_argument(
         "--case_name",
         type=str,

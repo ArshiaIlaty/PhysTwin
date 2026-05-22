@@ -26,8 +26,9 @@ from pathlib import Path
 import numpy as np
 
 
-SRC_DIR = "dataset"
-DST_DIR = "dataset_v2"
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+SRC_DIR = str(_RESULTS_DIR / "dataset")
+DST_DIR = str(_RESULTS_DIR / "dataset_v2")
 
 
 NEW_FEATURE_NAMES = [

@@ -378,6 +378,326 @@ The caveat is that these are still PhysTwin-generated labels, not real robot
 force-sensor labels. They are useful for improving the learned PhysTwin
 surrogate, but they do not replace real measured force data for final validation.
 
+## What We Can Do With the Simulator
+
+After reading the simulator and trainer code, the right mental model is:
+
+> PhysTwin is a position-controlled spring-mass simulator for a reconstructed
+> deformable object.
+
+The thing we directly control is the controller/gripper trajectory. The simulator
+then computes how the object particles move and what spring forces arise from
+that motion.
+
+### What Is Directly Controllable Now
+
+The simulator already supports moving one or two control groups.
+
+In `interactive_playground`, keyboard controls move controller points:
+
+| Control group | Keys | Motion |
+|---|---|---|
+| control group 1 | `W/S`, `A/D`, `Q/E` | Move in x, y, z |
+| control group 2 | `I/K`, `J/L`, `U/O` | Move in x, y, z |
+
+Internally, that updates `current_target`, then the simulator runs:
+
+```python
+self.simulator.set_controller_interactive(prev_target, current_target)
+wp.capture_launch(self.simulator.forward_graph)
+```
+
+For recorded or scripted trajectories, it uses:
+
+```python
+self.simulator.set_controller_target(frame_idx, pure_inference=True)
+```
+
+So yes: we can control a gripper-like object, but in the current code it is a
+kinematic controller. We prescribe where the controller points go; the simulator
+does not solve robot dynamics or torque control.
+
+### How the Gripper Acts on the Object
+
+At initialization, PhysTwin builds springs:
+
+1. object-object springs connect nearby object particles
+2. controller-object springs connect controller points to nearby object particles
+
+During simulation, the controller points are moved to the target position. The
+controller-object springs stretch or compress. Those spring forces move the
+object particles.
+
+That means control is currently:
+
+```text
+controller position trajectory -> spring forces -> object deformation
+```
+
+not:
+
+```text
+direct force command -> object deformation
+```
+
+### Can We Apply Forces to an Object?
+
+Yes, but with an important distinction.
+
+What PhysTwin currently does natively:
+
+```text
+move controller/gripper -> PhysTwin computes the applied force
+```
+
+The force comes from Hooke's law over the controller-object springs. This is the
+force visualized by `visualize_force.py` and extracted by `extract_force_data()`.
+
+What it does not currently expose as a clean public API:
+
+```text
+apply an arbitrary external force vector directly to particle i
+```
+
+That could be added, but it would be a code extension. The natural place would
+be in `spring_mass_warp.py`, before `update_vel_from_force(...)`, by adding an
+external-force array into `wp_vertice_forces`. For the current project, though,
+it is cleaner to treat controller motion as the actuator and force as the
+resulting measured/inferred quantity.
+
+### What the Simulator Outputs
+
+From a rollout, we can observe:
+
+| Output | Meaning |
+|---|---|
+| particle positions | full object state, `[T, N_particles, 3]` |
+| particle velocities | available inside simulator state |
+| controller positions | gripper/controller trajectory |
+| net force per control group | via `get_force_vector(...)` |
+| total/net force | `y_net = forces.sum(axis=1)` |
+| rendered video | via Gaussian rendering / interactive playground |
+| material map | approximate spatial stiffness visualization |
+
+This is enough to build learning, planning, and analysis projects.
+
+## What Project Directions This Enables
+
+### Direction 1: Better Force Predictor
+
+This is the most direct continuation of the current work.
+
+Use real + synthetic trajectories to train:
+
+```text
+deformation/controller features -> y_net or y_per_ctrl
+```
+
+Concrete experiments:
+
+- train real only vs synthetic only vs real + synthetic
+- predict `y_net` and compare against predicting `y_per_ctrl`
+- drop toy and unstable cases, then measure cross-case R²
+- train force magnitude only, `||F||`, as an easier target
+- evaluate whether synthetic trajectories improve rope/sloth cross-case results
+
+Why this is good: it directly addresses the current bottleneck, which is lack of
+force-diverse data.
+
+### Direction 2: Controller / Policy Learning
+
+This turns the simulator into a control dataset generator.
+
+The supervised policy version is:
+
+```text
+input:  current state + desired force/deformation
+output: next controller motion
+```
+
+For example:
+
+```text
+policy(X_t, y_current, y_goal) -> delta_controller_xyz
+```
+
+Training labels can come from synthetic rollouts:
+
+```text
+delta_controller_t = controller_centroid[t+1] - controller_centroid[t]
+```
+
+Then closed-loop testing would look like:
+
+1. choose a target force or target deformation
+2. observe current object features
+3. policy predicts the next gripper displacement
+4. set the next controller target
+5. run PhysTwin one step
+6. measure achieved force/deformation
+7. repeat
+
+This is not full RL yet. It is supervised control/imitation from generated
+rollouts. It is much easier to get working than RL.
+
+Good first project:
+
+> Train a policy that moves the gripper to reach a desired `y_net` force profile
+> in the simulator.
+
+### Direction 3: MPC / Planning Over Controller Motions
+
+Instead of training a policy, we can search over future controller motions.
+
+At each timestep:
+
+1. sample many possible short controller motion sequences
+2. roll each one out in PhysTwin
+3. score them against a desired force or deformation
+4. execute the best first action
+5. repeat
+
+This is model-predictive control. It fits PhysTwin well because the simulator is
+the model. The README also points to a separate PhysTwin-MPC reference project,
+which suggests this is a natural direction.
+
+Possible goals:
+
+- reach target force magnitude
+- stretch cloth to a target bbox size
+- move rope endpoint to a target position
+- keep force below a safety threshold while lifting
+
+This may be easier to reason about than RL and more impressive than a pure force
+predictor.
+
+### Direction 4: Build a New Material / Object
+
+Yes, we can use the pipeline to build a new material, but this is a larger data
+pipeline project.
+
+For a new object/material, the full PhysTwin path is:
+
+1. collect RGB-D video
+2. segment object and hand/controller
+3. dense-track object pixels
+4. lift tracks to 3D
+5. build `final_data.pkl`
+6. run first-stage CMA optimization
+7. run differentiable spring/contact optimization
+8. run inference / interactive playground / force extraction
+
+The relevant scripts are:
+
+```text
+process_data.py
+script_process_data.py
+optimize_cma.py
+script_optimize.py
+train_warp.py
+script_train.py
+inference_warp.py
+interactive_playground.py
+visualize_force.py
+visualize_material.py
+```
+
+What "new material" means in this repo:
+
+- not just assigning a label like "foam"
+- actually fitting spring stiffness, collision elasticity, friction, damping,
+  and spring topology so the simulator matches a real object's observed motion
+
+Good candidates:
+
+- sponge or foam block
+- rubber strip
+- silicone toy
+- cable/tube
+- towel/cloth variant
+- soft plush object
+
+This is high-impact but more fragile because raw data processing depends on
+segmentation, depth, tracking, and calibration quality.
+
+### Direction 5: Material Analysis / Stiffness Maps
+
+`visualize_material.py` and `trainer_warp.py::visualize_material()` already
+visualize approximate material stiffness from optimized spring parameters.
+
+A project direction here:
+
+> Compare learned stiffness maps across object categories and relate them to
+> force-prediction performance.
+
+Examples:
+
+- do rope/cloth/sloth have distinct spring-stiffness distributions?
+- do high-stiffness regions correlate with larger extracted forces?
+- can stiffness-map statistics improve force prediction?
+- can we classify material from the fitted spring parameters?
+
+This is more analysis-focused and less robotics-control-focused.
+
+### Direction 6: Add Direct External Force Actuation
+
+This is possible, but it requires modifying the simulator.
+
+Current simulator loop:
+
+```text
+clear forces
+set controller points
+evaluate spring forces
+update velocity from forces + gravity
+handle collisions
+integrate positions
+```
+
+To apply arbitrary external force, add:
+
+```text
+external_force[t, particle_id, xyz]
+```
+
+and inject it into `wp_vertice_forces` before velocity update.
+
+This would allow experiments like:
+
+- poke object at a particle with a known force
+- compare direct-force actuation vs controller-spring actuation
+- generate force-response curves
+
+But it would be less faithful to the current real-video setup, because real
+PhysTwin interaction is modeled through controller-object springs.
+
+## Recommended Project Direction
+
+The strongest project path from where the repo is now is:
+
+> Use PhysTwin as a controller-motion simulator, then learn or plan gripper
+> motions that achieve desired forces/deformations.
+
+Concrete first milestone:
+
+1. Use `dataset_v2` + `dataset_synth_raw`.
+2. Build a policy dataset:
+
+```text
+input  = [X_t, y_net_t, y_goal, y_goal - y_net_t]
+target = controller_centroid[t+1] - controller_centroid[t]
+```
+
+3. Train a small MLP policy.
+4. Close the loop in PhysTwin by updating controller targets with the predicted
+   displacement.
+5. Plot desired force vs achieved force.
+
+That gives a clear story:
+
+> "We converted PhysTwin from passive force estimation into force-aware gripper
+> control for deformable objects."
+
 ## How the Force Labels Are Computed
 
 The force labels are not measured by a real force sensor. They are extracted

@@ -30,6 +30,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+
 
 class ForceMLP(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, hidden: int = 256):
@@ -224,9 +226,10 @@ def v1_v2_comparison(v1_metrics: dict, v2_summary: dict, out_path: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_dir", type=str, default="dataset_v2")
-    parser.add_argument("--fig_dir", type=str, default="figures")
-    parser.add_argument("--best_seed_dir", type=str, default="models_v2_within_noclip/seed_0",
+    parser.add_argument("--dataset_dir", type=str, default=str(_RESULTS_DIR / "dataset_v2"))
+    parser.add_argument("--fig_dir", type=str, default=str(_RESULTS_DIR / "figures"))
+    parser.add_argument("--best_seed_dir", type=str,
+                        default=str(_RESULTS_DIR / "models_v2_within_noclip" / "seed_0"),
                         help="Used for force-over-time figure.")
     args = parser.parse_args()
     os.makedirs(args.fig_dir, exist_ok=True)
@@ -238,20 +241,22 @@ def main():
 
     # Multi-seed summaries
     summaries = {}
-    for label, path in [
+    for label, rel in [
         ("within / no-clip", "models_v2_within_noclip/multi_seed_summary.json"),
         ("within / clip-99", "models_v2_within/multi_seed_summary.json"),
         ("cross / no-clip",  "models_v2_cross_noclip/multi_seed_summary.json"),
         ("cross / clip-99",  "models_v2_cross/multi_seed_summary.json"),
     ]:
+        path = str(_RESULTS_DIR / rel)
         if os.path.exists(path):
             with open(path) as f:
                 summaries[label] = json.load(f)
     r2_multi_seed_chart(summaries, os.path.join(args.fig_dir, "r2_multi_seed.png"))
 
     # v1 vs v2 within-case comparison
-    if os.path.exists("models_within_case/metrics.json") and "within / no-clip" in summaries:
-        with open("models_within_case/metrics.json") as f:
+    v1_metrics_path = str(_RESULTS_DIR / "models_within_case" / "metrics.json")
+    if os.path.exists(v1_metrics_path) and "within / no-clip" in summaries:
+        with open(v1_metrics_path) as f:
             v1m = json.load(f)
         v1_v2_comparison(v1m, summaries["within / no-clip"],
                           os.path.join(args.fig_dir, "v1_v2_comparison.png"))

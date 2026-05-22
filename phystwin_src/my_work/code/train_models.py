@@ -25,6 +25,8 @@ from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+
 
 def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
@@ -479,8 +481,8 @@ def run_pipeline(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_dir", type=str, default="dataset")
-    parser.add_argument("--out_dir", type=str, default="models")
+    parser.add_argument("--dataset_dir", type=str, default=str(_RESULTS_DIR / "dataset"))
+    parser.add_argument("--out_dir", type=str, default=str(_RESULTS_DIR / "models"))
     parser.add_argument("--target", type=str, choices=["net", "per_ctrl"], default="per_ctrl")
     parser.add_argument("--split", type=str,
                         choices=["cross_case", "within_case", "random_block"],

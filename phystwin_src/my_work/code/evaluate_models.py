@@ -14,6 +14,7 @@ import json
 import os
 import pickle
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -22,6 +23,8 @@ import torch.nn as nn
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 class ForceMLP(nn.Module):
@@ -196,9 +199,9 @@ def figure_error_distribution(dataset_dir: str, models, metrics_meta, fig_dir: s
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_dir", type=str, default="dataset")
-    parser.add_argument("--models_dir", type=str, default="models")
-    parser.add_argument("--fig_dir", type=str, default="figures")
+    parser.add_argument("--dataset_dir", type=str, default=str(_RESULTS_DIR / "dataset"))
+    parser.add_argument("--models_dir", type=str, default=str(_RESULTS_DIR / "models"))
+    parser.add_argument("--fig_dir", type=str, default=str(_RESULTS_DIR / "figures"))
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")

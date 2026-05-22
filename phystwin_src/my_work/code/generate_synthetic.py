@@ -82,7 +82,8 @@ MOTION_TYPES = ["linear_push", "sinusoidal", "random_walk", "hold_release"]
 # Sanity gate constants:
 MAX_F_RATIO = 1.5            # reject if max|F| > 1.5 × donor recorded max|F|
 MAX_DISP_RATIO = 2.0         # reject if any particle moves > 2 × donor bbox diag
-OUT_DIR = "dataset_synth_raw"
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+OUT_DIR = str(_RESULTS_DIR / "dataset_synth_raw")
 
 
 def _setup_trainer(case_name: str, n_ctrl_parts: int, cfg_type: str):
