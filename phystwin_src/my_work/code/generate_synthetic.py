@@ -29,6 +29,13 @@ consistent.
 """
 from __future__ import annotations
 
+# Per lessons.md: this repo has two qqtt/ trees; force-import the
+# phystwin_src/ copy (the one with our edits, including extract_force_data).
+import sys as _sys
+from pathlib import Path as _Path
+_REPO_ROOT = _Path(__file__).resolve().parent.parent.parent
+_sys.path.insert(0, str(_REPO_ROOT))
+
 import argparse
 import glob
 import json
@@ -77,7 +84,8 @@ DONORS = {
     ],
 }
 
-MOTION_TYPES = ["linear_push", "sinusoidal", "random_walk", "hold_release"]
+MOTION_TYPES = ["linear_push", "sinusoidal", "random_walk", "hold_release",
+                 "ramp_full"]
 
 # Sanity gate constants:
 MAX_F_RATIO = 1.5            # reject if max|F| > 1.5 × donor recorded max|F|
@@ -192,6 +200,20 @@ def make_motion(motion_type: str, T: int, K: int, ctrl_rest: np.ndarray,
                 phase = (t - hold_end) / max(T - hold_end, 1)
                 a = 0.5 + 0.5 * np.cos(np.pi * phase)
             offsets[t] = direction * (amp * a)
+
+    elif motion_type == "ramp_full":
+        # Symmetric triangle wave: linear push for 50%, linear release for 50%.
+        # No hold phase. The intent is to maximize the fraction of frames
+        # spent in the release-phase regime, giving the policy clean
+        # monotonic-retract training data for the failure mode it hit on
+        # the Step 4 ramp test.
+        half = T // 2
+        for t in range(T):
+            if t < half:
+                a = t / max(half, 1)                  # 0 → 1
+            else:
+                a = (T - 1 - t) / max(T - half - 1, 1)  # 1 → 0
+            offsets[t] = direction * (amp * a)
     else:
         raise ValueError(motion_type)
 
@@ -217,7 +239,8 @@ def _validate(positions: np.ndarray, forces: np.ndarray,
 
 def generate_for_donor(material: str, case_name: str, n_ctrl_parts: int, cfg_type: str,
                         n_per_motion: int = 6, T: int = 120, rng_seed: int = 0,
-                        amp_min: float = 0.10, amp_max: float = 0.40):
+                        amp_min: float = 0.10, amp_max: float = 0.40,
+                        motion_types: list[str] | None = None):
     print(f"\n=== Donor: {case_name} (material={material}, n_ctrl={n_ctrl_parts}) ===")
     trainer, best_path = _setup_trainer(case_name, n_ctrl_parts, cfg_type)
     # Donor reference statistics
@@ -239,7 +262,8 @@ def generate_for_donor(material: str, case_name: str, n_ctrl_parts: int, cfg_typ
     rng = np.random.RandomState(rng_seed)
     stats = {"accepted": 0, "rejected": 0, "by_reason": {}}
 
-    for motion in MOTION_TYPES:
+    active_motions = motion_types if motion_types is not None else MOTION_TYPES
+    for motion in active_motions:
         print(f"  -- motion={motion} ({n_per_motion} variations) --")
         for i in range(n_per_motion):
             ctrl_synth = make_motion(motion, T, ctrl_rest.shape[0], ctrl_rest,
@@ -336,6 +360,10 @@ def main():
     parser.add_argument("--amp_max", type=float, default=0.40,
                           help="Upper bound of synthetic motion amplitude. Lower = higher accept rate.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--motion_types", type=str, default=None,
+                        help="Comma-separated motion types to generate. Default "
+                             "= all in MOTION_TYPES. Use e.g. 'ramp_full' to "
+                             "generate only that family (for Fix D).")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -351,10 +379,13 @@ def main():
         material_summary = {"accepted": 0, "rejected": 0, "by_donor": {}}
         for d_idx, (case_name, n_ctrl_parts, cfg_type) in enumerate(DONORS[m]):
             seed_per_donor = args.seed * 1000 + d_idx
+            mtypes = ([m.strip() for m in args.motion_types.split(",") if m.strip()]
+                      if args.motion_types else None)
             s = generate_for_donor(m, case_name, n_ctrl_parts, cfg_type,
                                     n_per_motion=args.n_per_motion, T=args.T,
                                     rng_seed=seed_per_donor,
-                                    amp_min=args.amp_min, amp_max=args.amp_max)
+                                    amp_min=args.amp_min, amp_max=args.amp_max,
+                                    motion_types=mtypes)
             material_summary["accepted"] += s["accepted"]
             material_summary["rejected"] += s["rejected"]
             material_summary["by_donor"][case_name] = s

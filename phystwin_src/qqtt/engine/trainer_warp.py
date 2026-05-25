@@ -1877,6 +1877,197 @@ class InvPhyTrainerWarp:
         }
         return positions, forces, controller_pos, meta
 
+    def run_policy(
+        self,
+        model_path,
+        n_ctrl_parts,
+        policy_fn,
+        F_goal,
+        feature_fn,
+        max_frames=None,
+    ):
+        """Drive PhysTwin frame-by-frame with a learned policy.
+
+        Mirrors `extract_force_data`'s setup but replaces
+        `set_controller_target(i)` (recorded trajectory) with
+        `set_controller_interactive(prev, prev + policy_delta)`. The policy's
+        output is a per-group centroid Δ in meters; this method rigid-translates
+        all K controller points of each group by that Δ.
+
+        Args:
+            model_path:   path to best_*.pth checkpoint.
+            n_ctrl_parts: 1 or 2.
+            policy_fn:    callable (state31, force_now_pad, force_goal_pad,
+                          frame_idx) -> delta_per_group [2, 3] (meters).
+                          force_now_pad and force_goal_pad are [2, 3] padded.
+            F_goal:       [T, 2, 3] desired per-group force trajectory (Newtons).
+            feature_fn:   callable (positions_so_far, ctrl_pos_so_far)
+                          -> [T_so_far, 31] features (use my_work.code.features).
+            max_frames:   optional cap on T.
+
+        Returns:
+            positions      [T, N_all_points, 3] float32
+            forces         [T, n_ctrl_parts, 3] float32 (per-group, NOT padded)
+            controller_pos [T, K, 3]            float32
+            meta           dict
+        """
+        logger.info(f"[run_policy] Load model from {model_path}")
+        checkpoint = torch.load(model_path, map_location=cfg.device)
+
+        spring_Y = checkpoint["spring_Y"]
+        collide_elas = checkpoint["collide_elas"]
+        collide_fric = checkpoint["collide_fric"]
+        collide_object_elas = checkpoint["collide_object_elas"]
+        collide_object_fric = checkpoint["collide_object_fric"]
+        num_object_springs = checkpoint["num_object_springs"]
+
+        assert (
+            len(spring_Y) == self.simulator.n_springs
+        ), "Checkpoint spring count must match current simulator config"
+
+        self.simulator.set_spring_Y(torch.log(spring_Y).detach().clone())
+        self.simulator.set_collide(
+            collide_elas.detach().clone(), collide_fric.detach().clone()
+        )
+        self.simulator.set_collide_object(
+            collide_object_elas.detach().clone(),
+            collide_object_fric.detach().clone(),
+        )
+
+        # ---------- Group controller points (mirror extract_force_data) -------
+        first_frame_ctrl = self.simulator.controller_points[0]
+        K = first_frame_ctrl.shape[0]
+        if n_ctrl_parts == 1:
+            group_ids_np = np.zeros(K, dtype=np.int64)
+            force_indexes = [torch.arange(K, device=cfg.device)]
+        else:
+            km = KMeans(n_clusters=n_ctrl_parts, random_state=0, n_init=10)
+            group_ids_np = km.fit_predict(first_frame_ctrl.cpu().numpy()).astype(
+                np.int64
+            )
+            force_indexes = [
+                torch.tensor(np.where(group_ids_np == i)[0], device=cfg.device)
+                for i in range(n_ctrl_parts)
+            ]
+        # Per-group torch boolean masks over controller points (for rigid translate).
+        group_masks_torch = [
+            torch.from_numpy(group_ids_np == g).to(cfg.device)
+            for g in range(n_ctrl_parts)
+        ]
+
+        # ---------- Build force-spring bookkeeping per group ------------------
+        control_springs = self.init_springs[num_object_springs:]
+        force_springs, force_object_points = [], []
+        force_rest_lengths, force_spring_Y = [], []
+        for i in range(n_ctrl_parts):
+            fs, fop, frl, fsy = [], [], [], []
+            for j in range(len(control_springs)):
+                if (control_springs[j][0] - self.num_all_points) in force_indexes[i]:
+                    fs.append(control_springs[j])
+                    frl.append(self.init_rest_lengths[j + num_object_springs])
+                    fsy.append(spring_Y[j + num_object_springs])
+                    fop.append(control_springs[j][1])
+            fs = torch.vstack(fs)
+            fs[:, 0] -= self.num_all_points
+            force_springs.append(fs)
+            force_rest_lengths.append(torch.tensor(frl, device=cfg.device))
+            force_spring_Y.append(torch.tensor(fsy, device=cfg.device))
+            force_object_points.append(torch.tensor(fop, device=cfg.device))
+
+        # ---------- Buffers ---------------------------------------------------
+        recorded_T = self.dataset.frame_len
+        T = min(int(F_goal.shape[0]), int(recorded_T))
+        if max_frames is not None:
+            T = min(T, int(max_frames))
+
+        positions = np.empty((T, self.num_all_points, 3), dtype=np.float32)
+        forces = np.empty((T, n_ctrl_parts, 3), dtype=np.float32)
+        controller_pos = np.empty((T, K, 3), dtype=np.float32)
+
+        # ---------- Reset simulator to frame 0 --------------------------------
+        self.simulator.set_init_state(
+            self.simulator.wp_init_vertices, self.simulator.wp_init_velocities
+        )
+
+        prev_x = wp.to_torch(
+            self.simulator.wp_states[0].wp_x, requires_grad=False
+        ).clone()
+        positions[0] = prev_x.detach().cpu().numpy()
+
+        # initial controller positions = recorded frame 0
+        curr_target = first_frame_ctrl.detach().clone()  # torch [K, 3] on cfg.device
+        controller_pos[0] = curr_target.cpu().numpy()
+
+        def _ctrl_forces(x_now, ctrl_torch):
+            out = np.empty((n_ctrl_parts, 3), dtype=np.float32)
+            for j in range(n_ctrl_parts):
+                fv = self.get_force_vector(
+                    x_now,
+                    force_springs[j],
+                    force_rest_lengths[j],
+                    force_spring_Y[j],
+                    self.num_all_points,
+                    ctrl_torch,
+                )
+                out[j] = fv.detach().cpu().numpy()
+            return out
+
+        forces[0] = _ctrl_forces(prev_x, curr_target)
+
+        # ---------- Rollout loop ---------------------------------------------
+        for t in tqdm(range(1, T), desc="run_policy"):
+            # Features computed from history up to and including frame t-1
+            # (matches training: action[t] = ctrl[t+1]-ctrl[t] uses state at t).
+            feats_all = feature_fn(positions[:t], controller_pos[:t])
+            state31 = feats_all[-1]  # [31]
+
+            force_now_pad = np.zeros((2, 3), dtype=np.float32)
+            force_now_pad[:n_ctrl_parts] = forces[t - 1]
+            force_goal_t = np.asarray(F_goal[t], dtype=np.float32)  # [2, 3]
+
+            delta = np.asarray(
+                policy_fn(state31, force_now_pad, force_goal_t, t),
+                dtype=np.float32,
+            )  # [2, 3]
+            # Mask: only apply Δ for groups that exist in this case.
+            if delta.shape[0] > n_ctrl_parts:
+                delta = delta.copy()
+                delta[n_ctrl_parts:] = 0.0
+
+            # Build new curr_target by rigid-translating each group's points.
+            prev_target = curr_target.detach().clone()
+            curr_target = curr_target.detach().clone()
+            for g in range(n_ctrl_parts):
+                d = torch.from_numpy(delta[g]).to(cfg.device, dtype=curr_target.dtype)
+                curr_target[group_masks_torch[g]] += d
+
+            self.simulator.set_controller_interactive(prev_target, curr_target)
+            if self.simulator.object_collision_flag:
+                self.simulator.update_collision_graph()
+            wp.capture_launch(self.simulator.forward_graph)
+
+            x = wp.to_torch(
+                self.simulator.wp_states[-1].wp_x, requires_grad=False
+            )
+            self.simulator.set_init_state(
+                self.simulator.wp_states[-1].wp_x,
+                self.simulator.wp_states[-1].wp_v,
+            )
+            torch.cuda.synchronize()
+
+            positions[t] = x.detach().cpu().numpy()
+            controller_pos[t] = curr_target.detach().cpu().numpy()
+            forces[t] = _ctrl_forces(x, curr_target)
+
+        meta = {
+            "num_all_points": int(self.num_all_points),
+            "n_ctrl_parts": int(n_ctrl_parts),
+            "frame_len": int(T),
+            "K": int(K),
+            "group_ids": group_ids_np.tolist(),
+        }
+        return positions, forces, controller_pos, meta
+
     def get_force_vector(
         self, x, springs, rest_lengths, spring_Y, num_object_points, controller_points
     ):

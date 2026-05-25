@@ -85,8 +85,17 @@ def _pad_y_per_ctrl(y: np.ndarray, T: int) -> np.ndarray:
     return y
 
 
-def trajectory_to_rows(traj: dict):
+def trajectory_to_rows(traj: dict, k_lookaheads=(1,)):
     """Convert one trajectory dict into per-frame-pair row arrays.
+
+    For each k in k_lookaheads, emit T-k rows per trajectory with:
+      state       = X[t]
+      force_now   = y[t]
+      force_goal  = y[t + k]            ← hindsight goal at lookahead k
+      action      = centroids[t+1] - centroids[t]   (always next-frame action)
+      k_lookahead = k
+
+    k=1 reproduces the original Step 1 row exactly.
 
     Returns (rows_dict, group_ids, group_separation_or_None) or None on failure.
     """
@@ -113,22 +122,40 @@ def trajectory_to_rows(traj: dict):
     if n_ctrl_parts == 2:
         group_sep = float(np.linalg.norm(centroids[0, 0] - centroids[0, 1]))
 
-    T_rows = T - 1
-    rows = {
-        "state":       X[:T_rows].astype(np.float32),
-        "force_now":   y[:T_rows].astype(np.float32),
-        "force_goal":  y[1:].astype(np.float32),
-        "action":      (centroids[1:] - centroids[:T_rows]).astype(np.float32),
-        "action_mask": np.array(
-            [[1.0] * n_ctrl_parts + [0.0] * (2 - n_ctrl_parts)] * T_rows,
-            dtype=np.float32,
-        ),
-        "material":     np.array([traj["material"]]    * T_rows, dtype="<U16"),
-        "case_name":    np.array([traj["case_name"]]   * T_rows, dtype="<U64"),
-        "n_ctrl_parts": np.full(T_rows, n_ctrl_parts, dtype=np.int8),
-        "source":       np.array([traj["source"]]      * T_rows, dtype="<U10"),
-        "motion_type":  np.array([traj["motion_type"]] * T_rows, dtype="<U16"),
-    }
+    # Per-frame next-step action (same for all k).
+    next_action_all = (centroids[1:] - centroids[:-1]).astype(np.float32)  # [T-1, 2, 3]
+
+    per_k = []
+    for k in k_lookaheads:
+        T_rows = T - k
+        if T_rows <= 0:
+            continue
+        # action for row at time t is centroids[t+1] - centroids[t]
+        # action index t ranges over [0, T_rows-1]
+        action_k = next_action_all[:T_rows]            # [T_rows, 2, 3]
+        rows_k = {
+            "state":       X[:T_rows].astype(np.float32),
+            "force_now":   y[:T_rows].astype(np.float32),
+            "force_goal":  y[k:k + T_rows].astype(np.float32),  # hindsight
+            "action":      action_k,
+            "action_mask": np.array(
+                [[1.0] * n_ctrl_parts + [0.0] * (2 - n_ctrl_parts)] * T_rows,
+                dtype=np.float32,
+            ),
+            "material":     np.array([traj["material"]]    * T_rows, dtype="<U16"),
+            "case_name":    np.array([traj["case_name"]]   * T_rows, dtype="<U64"),
+            "n_ctrl_parts": np.full(T_rows, n_ctrl_parts, dtype=np.int8),
+            "source":       np.array([traj["source"]]      * T_rows, dtype="<U10"),
+            "motion_type":  np.array([traj["motion_type"]] * T_rows, dtype="<U16"),
+            "k_lookahead":  np.full(T_rows, k, dtype=np.int8),
+        }
+        per_k.append(rows_k)
+
+    if not per_k:
+        return None
+
+    rows = {key: np.concatenate([r[key] for r in per_k], axis=0)
+            for key in per_k[0].keys()}
     return rows, group_ids, group_sep
 
 
@@ -142,8 +169,12 @@ def validate(combined: dict, per_traj_meta: list) -> dict:
     warnings_list = []
     R = combined["state"].shape[0]
 
-    # 1. row count
+    # 1. row count — expected = Σ(T-k) for each k, per trajectory
     expected_R = sum(m["T_rows"] for m in per_traj_meta)
+    # k_lookahead count if present
+    if "k_lookahead" in combined:
+        unique_k, k_counts = np.unique(combined["k_lookahead"], return_counts=True)
+        summary["per_k_lookahead_rows"] = {int(k): int(c) for k, c in zip(unique_k, k_counts)}
     summary["row_count"] = R
     summary["expected_row_count"] = expected_R
     summary["num_trajectories"] = len(per_traj_meta)
@@ -242,6 +273,11 @@ def main():
                         help="case_name prefixes to exclude (startswith match)")
     parser.add_argument("--no_synth", action="store_true",
                         help="skip dataset_synth_raw")
+    parser.add_argument("--k_lookaheads", nargs="+", type=int, default=[1],
+                        help="Goal lookahead distances. Default [1] reproduces "
+                             "the original Step 1 dataset. Pass e.g. "
+                             "`--k_lookaheads 1 5 10 20` for the Fix B "
+                             "hindsight-augmented dataset.")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -268,7 +304,7 @@ def main():
             if any(traj["case_name"].startswith(p) for p in args.exclude):
                 logger.info("excluding %s", traj["case_name"])
                 continue
-            result = trajectory_to_rows(traj)
+            result = trajectory_to_rows(traj, k_lookaheads=tuple(args.k_lookaheads))
             if result is None:
                 continue
             rows, gids, gsep = result

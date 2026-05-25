@@ -72,6 +72,91 @@ Two flavors:
   Tests whether the policy generalizes the inverse mapping to a goal it
   never saw paired with this exact initial state.
 
+## What "goal force" means in our tests (important for presentation)
+
+The `F_goal` trajectory we hand the policy comes in two flavors, and the
+distinction matters for understanding what each test demonstrates.
+
+### Type 1 — Recorded goal (`policy_recorded_goal` profile)
+
+`F_goal` is the **recorded force trajectory from an existing case** in
+`dataset_v2/`. For `double_lift_cloth_1` replay, we feed the policy "achieve
+the exact force trajectory that PhysTwin's optimization recovered when it
+processed the original RGB-D video of an operator doing this lift." It's a
+"real" force trace.
+
+But **the produced rollout is still new**:
+- The policy makes its own frame-by-frame decisions based on current state vs
+  the recorded goal.
+- Its predicted Δctrl rarely matches the operator's exact motion.
+- The simulator advances under the policy's Δctrl, not the operator's.
+- The state evolution diverges from the recorded one over time.
+- The achieved force won't exactly match the recorded goal — that gap is
+  what `err_ratio` measures.
+
+This is the **easier in-distribution test**: the goal is something the
+training distribution would naturally produce, so the policy has a fighting
+chance.
+
+### Type 2 — Synthetic goal (`policy_ramp` profile)
+
+`F_goal` is a **trajectory we invented** — for the rope ramp test, it's a
+linear ramp from 0 to 16.9 kN and back to 0 over 92 frames, applied along
+the +x axis. We pick:
+- The shape (linear rise / linear fall, symmetric)
+- The peak magnitude (50th percentile of the recorded case's force, scaled by
+  `--ramp_scale`)
+- The direction (group 0, +x axis)
+
+This goal **never** appeared in any training trajectory. It's pure invention.
+We only borrow the recorded case's initial state (`controller_pos[0]`,
+initial particles) to give the simulator a calibrated starting point.
+
+The trajectory the policy produces in response is therefore **entirely
+novel** — a new gripper motion and a new particle evolution that PhysTwin
+never simulated before. This is the **harder out-of-distribution test**:
+"given a goal you've never seen, can you still produce sensible behavior?"
+
+### Why the produced trajectories are new in both cases
+
+Every closed-loop rollout writes to `eval_*/<case>__<profile>.npz` three
+arrays:
+- `positions[T, N, 3]` — a brand new particle trajectory
+- `controller_pos[T, K, 3]` — a brand new gripper motion (the policy's, not
+  the operator's)
+- `forces[T, n_ctrl, 3]` — the forces those gripper motions produce
+
+None of these existed before the policy ran. They are the policy's own
+behavior in the simulator, produced frame-by-frame.
+
+The metric we evaluate (`err_ratio`) is "how close did the achieved force
+get to the goal force, on average over time?"
+
+### A note on the rollout videos — direction vs magnitude
+
+In the videos, we draw two arrows from each gripper centroid:
+- A **colored arrow** for the achieved force vector (magnitude proportional
+  to scale)
+- A **dashed black arrow** for the goal force vector (same scale)
+
+For synthetic ramp tests (Type 2), the goal direction is **arbitrarily set
+by us to +x**. The simulator's actual force response is determined by
+physics: spring stretch directions, contact geometry, rope/cloth
+orientation. So the achieved arrow will often point in a noticeably
+different direction from the goal arrow — that's expected and not a bug.
+
+**Our evaluated metric is magnitude tracking** (`‖F_achieved‖` vs
+`‖F_goal‖`) — that's what `err_ratio` measures and what the static tracking
+plots show. Directional control is a strictly harder problem we don't claim
+to solve. The arrow visualization in the video is illustrative, not
+quantitative; if the magnitudes track the goal envelope and the timing of
+rise/fall is right, the test passed.
+
+For Type 1 (recorded-goal) tests, the goal direction comes from physically
+realistic motion the operator actually produced, so the arrows tend to be
+better-aligned — but the policy still doesn't explicitly optimize for
+direction.
+
 ## Design Decisions (locked at planning time)
 
 1. **MLP first.** Stateless, frame-independent. Same architecture family that

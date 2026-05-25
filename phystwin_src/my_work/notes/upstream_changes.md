@@ -22,3 +22,28 @@ they touch files imported by the rest of the package.
    - `meta`           `dict(num_all_points, n_ctrl_parts, frame_len)`
 
    Used by [extract_dataset.py](../code/extract_dataset.py).
+
+3. **`InvPhyTrainerWarp.run_policy(model_path, n_ctrl_parts, policy_fn, F_goal,
+   feature_fn, max_frames=None)`** — new method added right after
+   `extract_force_data` (around line 1879). The closed-loop driver for the
+   policy extension project ([../docs/closed_loop_control/](../docs/closed_loop_control/)).
+
+   Mirrors `extract_force_data`'s setup (load checkpoint, push spring /
+   collide params, group controller points via KMeans, build per-group
+   force-spring bookkeeping). The difference is the per-frame loop: instead
+   of reading the recorded controller trajectory via
+   `set_controller_target(i)`, it calls
+   `policy_fn(state31, force_now_pad, force_goal_pad, frame_idx)` for a
+   per-group centroid Δ, rigid-translates each group's K controller points
+   by that Δ, then advances the simulator via
+   `set_controller_interactive(prev_target, curr_target)` and
+   `wp.capture_launch(forward_graph)`.
+
+   Per-step force computation uses the **driven** controller positions
+   (not `self.simulator.controller_points[t]` which holds the recorded
+   trajectory), via `get_force_vector(...)`.
+
+   Returns the same array schema as `extract_force_data` plus
+   `meta["K"]` and `meta["group_ids"]` for downstream group-aware analysis.
+
+   Used by [run_closed_loop.py](../code/run_closed_loop.py).
