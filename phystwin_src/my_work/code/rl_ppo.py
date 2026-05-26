@@ -232,10 +232,11 @@ def train(args):
             ramp_direction=args.ramp_direction,
             max_action_m=args.max_action_m,
         )
-    obs_dim = 43; act_dim = 6
-    logger.info("env episode length T=%d", env.T)
+    obs_dim = int(env.obs_dim); act_dim = int(env.act_dim)
+    logger.info("env episode length T=%d, obs_dim=%d, act_dim=%d",
+                env.T, obs_dim, act_dim)
 
-    # Build actor + critic
+    # Build actor + critic — sized for the env's obs_dim (43 / 44 / 45)
     actor = Actor(in_dim=obs_dim, hidden=args.hidden, out_dim=act_dim,
                    init_log_std=args.init_log_std).to(device)
     critic = Critic(in_dim=obs_dim, hidden=args.hidden).to(device)

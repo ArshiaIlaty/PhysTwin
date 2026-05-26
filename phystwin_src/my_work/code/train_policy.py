@@ -68,11 +68,21 @@ def load_dataset(npz_path: Path, exclude_materials):
         "motion_type":  motion_type[keep],
         "source":       source[keep],
     }
-    out["features"] = np.concatenate(
-        [out["state"], out["force_now"].reshape(-1, 6), out["force_goal"].reshape(-1, 6)],
-        axis=1,
-    ).astype(np.float32)
-    assert out["features"].shape[1] == 43, out["features"].shape
+    feature_parts = [
+        out["state"],
+        out["force_now"].reshape(-1, 6),
+        out["force_goal"].reshape(-1, 6),
+    ]
+    # Fix E/F: optional material descriptor (1 or 2 dim per row)
+    if "material_descriptor" in d.files:
+        md = d["material_descriptor"][keep].astype(np.float32)
+        if md.ndim == 1:
+            md = md.reshape(-1, 1)
+        out["material_descriptor"] = md
+        feature_parts.append(md)
+    out["features"] = np.concatenate(feature_parts, axis=1).astype(np.float32)
+    # Allow 43 (no descriptor), 44 (Fix E), 45 (Fix F)
+    assert out["features"].shape[1] in (43, 44, 45), out["features"].shape
     return out
 
 
@@ -169,7 +179,9 @@ def unscale_predictions(pred_flat, materials, scalers):
 # ----------------------------- model --------------------------------------
 
 class PolicyMLP(nn.Module):
-    def __init__(self, in_dim=43, hidden=256, out_dim=6):
+    def __init__(self, in_dim=None, hidden=256, out_dim=6):
+        if in_dim is None:
+            in_dim = 43
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
@@ -402,7 +414,8 @@ def run_overfit(args):
     Mt = torch.from_numpy(tiny["action_mask"]).float()
 
     torch.manual_seed(args.seed)
-    model = PolicyMLP(in_dim=43, hidden=args.hidden, out_dim=6)
+    in_dim = tiny["features"].shape[1]
+    model = PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     final_loss = float("inf")
     for epoch in range(args.epochs):
@@ -433,7 +446,9 @@ def run_inspect(args):
     if args.model_dir is None:
         raise SystemExit("--inspect_only requires --model_dir")
     md = Path(args.model_dir)
-    model = PolicyMLP(in_dim=43, hidden=args.hidden, out_dim=6)
+    # Infer in_dim from feat_scaler shape (saves us from sniffing the state_dict)
+    in_dim = int(fs["mean"].shape[0])
+    model = PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
     model.load_state_dict(torch.load(md / "policy.pt", map_location="cpu",
                                      weights_only=True))
     with open(md / "feat_scaler.pkl", "rb") as f:
@@ -489,15 +504,16 @@ def run_inspect(args):
 
 def run_training(args, seeds):
     data = load_dataset(args.data, args.exclude_materials)
+    in_dim = data["features"].shape[1]
     args.out.mkdir(parents=True, exist_ok=True)
     for seed in seeds:
-        logger.info("=== seed %d ===", seed)
+        logger.info("=== seed %d ===  (in_dim=%d)", seed, in_dim)
         torch.manual_seed(seed)
         np.random.seed(seed)
         train, val, fs, ts = prepare_split_and_scale(data, args.val_frac, seed)
         Xt, Yt, Mt = to_tensors(train, fs, ts)
         Xv, Yv, Mv = to_tensors(val, fs, ts)
-        model = PolicyMLP(in_dim=43, hidden=args.hidden, out_dim=6)
+        model = PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
         model, log, best_val = train_loop(model, (Xt, Yt, Mt), (Xv, Yv, Mv),
                                           args, seed)
         metrics = evaluate_unscaled(model, val, ts, fs)

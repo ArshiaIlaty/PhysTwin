@@ -116,6 +116,54 @@ def compute_31d_features(positions: np.ndarray,
     return out
 
 
+# ----- material descriptor (Fix E experiment) ---------------------------
+
+def get_log_spring_Y_mean(case_name: str, base_dir: str = ".") -> float:
+    """Return mean log spring stiffness for a case (per-case constant)."""
+    import torch
+    from pathlib import Path
+    paths = sorted(Path(base_dir, "experiments", case_name, "train").glob("best_*.pth"))
+    if not paths:
+        raise FileNotFoundError(f"No best_*.pth for {case_name}")
+    ckpt = torch.load(paths[0], map_location="cpu", weights_only=True)
+    spring_Y = ckpt["spring_Y"]
+    return float(torch.log(spring_Y).mean().item())
+
+
+def get_log_mean_force(case_name: str, dataset_v2_dir=None) -> float:
+    """Return log of mean force magnitude across active groups in the case's
+    recorded data. Captures 'typical force scale' for this case.
+
+    Distinguishes cases like single_push_rope_4 (gentle, peak ~2.5kN) from
+    typical rope cases (~15kN) — useful where the material descriptor alone
+    can't differentiate.
+    """
+    from pathlib import Path
+    if dataset_v2_dir is None:
+        dataset_v2_dir = Path(__file__).resolve().parent.parent / "results" / "dataset_v2"
+    p = Path(dataset_v2_dir) / f"{case_name}.npz"
+    if not p.exists():
+        raise FileNotFoundError(f"No dataset_v2 npz for {case_name}")
+    d = np.load(p, allow_pickle=True)
+    y_per_ctrl = d["y_per_ctrl"]
+    n_ctrl = int(d["n_ctrl_parts"])
+    mag = np.linalg.norm(y_per_ctrl[:, :n_ctrl], axis=-1)
+    return float(np.log(float(mag.mean()) + 1e-6))
+
+
+def get_material_descriptor(case_name: str, dataset_v2_dir=None) -> np.ndarray:
+    """2-vec per-case descriptor: [log_mean_spring_Y, log_mean_force].
+
+    Fix F: extends Fix E by adding the per-case "typical force" alongside
+    "material stiffness," so the policy can distinguish gentle cases from
+    aggressive ones independently of material stiffness.
+    """
+    return np.array([
+        get_log_spring_Y_mean(case_name),
+        get_log_mean_force(case_name, dataset_v2_dir),
+    ], dtype=np.float32)
+
+
 # -------------------- self-test ------------------------------------------
 
 def _self_test():

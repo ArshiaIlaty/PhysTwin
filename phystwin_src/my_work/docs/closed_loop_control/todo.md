@@ -215,6 +215,76 @@ principled attempt.
 **RL is the new best single policy.** Improvements modest but
 real, especially on rope. State-distribution-shift diagnosis validated.
 
+### Fix E — Material descriptor (mean log spring_Y) ✅ 2026-05-25
+- [x] Added `get_log_spring_Y_mean` to features.py.
+- [x] Modified build_policy_dataset.py to include 1-dim material_descriptor.
+- [x] Trained Fix E (43+1=44 dim, hidden=256).
+- [x] Eval: cloth ramp 6.55 → 2.03 (huge win!); cloth replay recovered
+      from Fix D-T's regression (1.00 → 0.37).
+- [x] Lost: single_push_rope_4 outlier got worse (1.84 → 4.04).
+
+### Fix F — 2-vec descriptor + 512 hidden ✅ 2026-05-25
+- [x] Added `get_log_mean_force` and `get_material_descriptor` (2-vec).
+- [x] Bumped hidden to 512 (78K → 290K params).
+- [x] Rebuilt dataset and trained Fix F (45-dim).
+- [x] Eval: BEST or tied on all 6 (material, profile) combos.
+- [x] rope_4 outlier FIXED: 1.84 → 0.77 (controlled).
+- [x] Updated load_policy_artifacts to infer in_dim/hidden from state_dict.
+
+### RL on Fix F multi-material ✅ NEW HEADLINE 2026-05-25
+- [x] Updated rl_env.py to compute material descriptor per env (43/44/45).
+- [x] Updated rl_ppo.py to use env.obs_dim/act_dim.
+- [x] Trained 51K steps multi-material with Fix F BC warm-start.
+- [x] Eval: wins rope replay (0.41), rope ramp (0.52), sloth replay (0.66).
+- [x] [rl_fixF_review.md](rl_fixF_review.md) written.
+- [x] 4 demo videos rendered (rope replay/ramp, cloth replay, sloth replay).
+
+### Fix G — Stiffness-shaped RL reward (next experiment)
+
+User-proposed: penalize aggressive actions more heavily on stiff materials,
+less on compliant ones. Should fix the sloth-ramp regression where
+RL-FF-Multi (2.66) lost to Fix D-T (1.67).
+
+Reward formula:
+```
+reward_t = -‖F_err‖ / force_scale                       (existing)
+         - α * exp(log_spring_Y - C) * ‖action‖²        (NEW — stiffness-scaled action penalty)
+         - β * max(0, ‖F_achieved‖ - ‖F_goal‖)²         (OPTIONAL — force overshoot penalty)
+```
+
+Where:
+- `α`: action-penalty coefficient (start with 1.0, tune)
+- `C ≈ 9.0`: normalizer (~typical rope log_spring_Y)
+- `β`: overshoot coefficient (optional add-on)
+
+Multiplier scaling:
+- Soft cloth (log=7):    e^(-2) = 0.14× penalty (lets policy use bigger actions)
+- Typical rope (log=9):  e^0 = 1.0× penalty
+- Stiff cloth (log=11):  e^2 = 7.4× penalty (forces small motions)
+- Stiff sloth (log=10.5): e^1.5 = 4.5× penalty
+
+Implementation:
+- [ ] Modify `PhysTwinForceEnv.step()` reward computation to include
+      stiffness-scaled action penalty.
+- [ ] Pass `log_spring_Y` from env init → reward fn (already available
+      via self.material_descriptor).
+- [ ] Add CLI args `--action_penalty_alpha`, `--stiffness_normalizer`,
+      and `--overshoot_beta`.
+- [ ] Smoke test with small α to confirm reward components are visible
+      but don't dominate (~1 hr).
+- [ ] Train 50K steps with shaped reward from Fix F BC warm-start
+      (~3 hr compute).
+- [ ] Eval on full 14-case sweep.
+- [ ] Compare to RL-FF-Multi specifically on sloth ramp + cloth ramp.
+
+Expected outcomes:
+- ✅ Sloth ramp: likely improvement (currently 2.66, target back toward Fix D-T's 1.67)
+- ✅ Cloth ramp: mild improvement on stiff cloth cases
+- ⚠️ Rope: likely unchanged (stiffness range too narrow within rope)
+- ⚠️ Risk: over-penalty kills force tracking → start with small α
+
+Cost: ~1 hr code + ~3 hr compute.
+
 ### Deferred further
 - [ ] MPC over the simulator (principled fix for release — bigger
       project, after goal-side fixes ruled out).

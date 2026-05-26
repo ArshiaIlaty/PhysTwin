@@ -51,7 +51,9 @@ sys.path.insert(0, str(REPO_ROOT))
 # Also ensure my_work/code is on sys.path so we can import features.
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from features import compute_31d_features  # noqa: E402
+from features import (  # noqa: E402
+    compute_31d_features, get_log_spring_Y_mean, get_material_descriptor,
+)
 
 from qqtt import InvPhyTrainerWarp  # noqa: E402
 from qqtt.utils import cfg, logger as qqtt_logger  # noqa: E402
@@ -142,23 +144,34 @@ class PolicyMLP(nn.Module):
 
 
 def load_policy_artifacts(policy_dir: Path):
-    """Load model + scalers from a trained seed directory."""
-    model = PolicyMLP(in_dim=43, hidden=256, out_dim=6)
-    model.load_state_dict(
-        torch.load(policy_dir / "policy.pt", map_location="cpu", weights_only=True)
-    )
-    model.eval()
+    """Load model + scalers from a trained seed directory.
+
+    Both `in_dim` and `hidden` are inferred from the saved state_dict so
+    we can load any (43/44/45 input)×(256/512/…) variant without
+    hardcoded args.
+    """
     with open(policy_dir / "feat_scaler.pkl", "rb") as f:
         feat_scaler = pickle.load(f)
     with open(policy_dir / "target_scalers.pkl", "rb") as f:
         target_scalers = pickle.load(f)
+    sd = torch.load(policy_dir / "policy.pt", map_location="cpu", weights_only=True)
+    # Sniff dims from the first layer weight shape: [hidden, in_dim]
+    first_layer = sd["net.0.weight"]
+    hidden, in_dim = int(first_layer.shape[0]), int(first_layer.shape[1])
+    assert in_dim == int(feat_scaler["mean"].shape[0]), \
+        f"state_dict in_dim={in_dim} mismatches feat_scaler {feat_scaler['mean'].shape[0]}"
+    model = PolicyMLP(in_dim=in_dim, hidden=hidden, out_dim=6)
+    model.load_state_dict(sd)
+    model.eval()
     return model, feat_scaler, target_scalers
 
 
 def make_policy_callable(model, feat_scaler, target_scalers, material: str,
                           F_user_target=None, goal_shaping: str = "direct",
                           max_step_force: float = 500.0,
-                          log_shaped_goals: list | None = None):
+                          log_shaped_goals: list | None = None,
+                          material_descriptor=None):
+    # material_descriptor may be a scalar (Fix E, 1 dim) or 2-vector (Fix F, 2 dim)
     """Closure: (state31, force_now_pad, force_goal_pad, frame_idx) -> Δ [2,3].
 
     goal_shaping:
@@ -184,6 +197,18 @@ def make_policy_callable(model, feat_scaler, target_scalers, material: str,
     f_mean = feat_scaler["mean"].astype(np.float32)
     f_std = feat_scaler["std"].astype(np.float32)
     max_step = float(max_step_force)
+    expected_md_dim = f_mean.shape[0] - 43  # 0 if no descriptor, 1 (Fix E), 2 (Fix F)
+    md = None
+    if expected_md_dim > 0:
+        if material_descriptor is None:
+            raise ValueError(
+                f"Policy expects {f_mean.shape[0]}-dim input (material descriptor "
+                f"of {expected_md_dim} dims) but none was passed.")
+        md = np.atleast_1d(np.asarray(material_descriptor, dtype=np.float32)).flatten()
+        if md.shape[0] != expected_md_dim:
+            raise ValueError(
+                f"material_descriptor dim mismatch: got {md.shape[0]}, "
+                f"policy expects {expected_md_dim}")
 
     def policy_fn(state31, force_now_pad, force_goal_pad, frame_idx):
         if goal_shaping == "incremental":
@@ -198,9 +223,10 @@ def make_policy_callable(model, feat_scaler, target_scalers, material: str,
         if log_shaped_goals is not None:
             log_shaped_goals.append(shaped_goal.copy())
 
-        feats = np.concatenate(
-            [state31, force_now_pad.flatten(), shaped_goal.flatten()]
-        ).astype(np.float32)
+        parts = [state31, force_now_pad.flatten(), shaped_goal.flatten()]
+        if md is not None:
+            parts.append(md)
+        feats = np.concatenate(parts).astype(np.float32)
         x = (feats - f_mean) / f_std
         with torch.no_grad():
             y = model(torch.from_numpy(x).unsqueeze(0)).numpy()[0]
@@ -263,10 +289,20 @@ def build_profile(profile: str, case_name: str, n_ctrl_parts: int, material: str
         model, fs, ts = load_policy_artifacts(args.policy_dir)
         F_user = recorded_v2["y_per_ctrl"].astype(np.float32)
         shaped_log = [] if args.goal_shaping == "incremental" else None
+        # Try Fix F (2-vec) first; fall back to Fix E (scalar) if dataset_v2 missing.
+        md = None
+        try:
+            md = get_material_descriptor(args.case_name)
+        except Exception:
+            try:
+                md = get_log_spring_Y_mean(args.case_name)
+            except Exception:
+                pass
         pfn = make_policy_callable(
             model, fs, ts, material,
             F_user_target=F_user, goal_shaping=args.goal_shaping,
             max_step_force=args.max_step_force, log_shaped_goals=shaped_log,
+            material_descriptor=md,
         )
         return pfn, F_user, {
             "deltas_source": "policy", "policy_dir": str(args.policy_dir),
@@ -424,10 +460,20 @@ def build_profile(profile: str, case_name: str, n_ctrl_parts: int, material: str
             F_goal[:, 0, 0] = ramp
             ramp_direction_info = "x_axis"
         shaped_log = [] if args.goal_shaping == "incremental" else None
+        # Try Fix F (2-vec) first; fall back to Fix E (scalar) if dataset_v2 missing.
+        md = None
+        try:
+            md = get_material_descriptor(args.case_name)
+        except Exception:
+            try:
+                md = get_log_spring_Y_mean(args.case_name)
+            except Exception:
+                pass
         pfn = make_policy_callable(
             model, fs, ts, material,
             F_user_target=F_goal, goal_shaping=args.goal_shaping,
             max_step_force=args.max_step_force, log_shaped_goals=shaped_log,
+            material_descriptor=md,
         )
         return pfn, F_goal, {
             "deltas_source": "policy",

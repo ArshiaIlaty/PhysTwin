@@ -85,6 +85,25 @@ def _pad_y_per_ctrl(y: np.ndarray, T: int) -> np.ndarray:
     return y
 
 
+_MAT_DESCRIPTOR_CACHE = {}
+
+
+def _get_material_descriptor(case_name: str, source: str) -> np.ndarray:
+    """2-vec per-case descriptor [log_spring_Y_mean, log_mean_force]. Cached."""
+    if case_name in _MAT_DESCRIPTOR_CACHE:
+        return _MAT_DESCRIPTOR_CACHE[case_name]
+    donor = case_name.split("__synth_")[0] if source == "synth" else case_name
+    try:
+        from features import get_material_descriptor
+        val = get_material_descriptor(donor)
+    except Exception as e:
+        logger.warning("material_descriptor failed for %s: %s; using zeros", donor, e)
+        val = np.zeros(2, dtype=np.float32)
+    _MAT_DESCRIPTOR_CACHE[case_name] = val
+    _MAT_DESCRIPTOR_CACHE[donor] = val
+    return val
+
+
 def trajectory_to_rows(traj: dict, k_lookaheads=(1,)):
     """Convert one trajectory dict into per-frame-pair row arrays.
 
@@ -125,6 +144,9 @@ def trajectory_to_rows(traj: dict, k_lookaheads=(1,)):
     # Per-frame next-step action (same for all k).
     next_action_all = (centroids[1:] - centroids[:-1]).astype(np.float32)  # [T-1, 2, 3]
 
+    # Material descriptor — constant per-case, broadcast to all rows.
+    mat_desc = _get_material_descriptor(traj["case_name"], traj["source"])
+
     per_k = []
     for k in k_lookaheads:
         T_rows = T - k
@@ -148,6 +170,7 @@ def trajectory_to_rows(traj: dict, k_lookaheads=(1,)):
             "source":       np.array([traj["source"]]      * T_rows, dtype="<U10"),
             "motion_type":  np.array([traj["motion_type"]] * T_rows, dtype="<U16"),
             "k_lookahead":  np.full(T_rows, k, dtype=np.int8),
+            "material_descriptor": np.tile(mat_desc[None, :], (T_rows, 1)).astype(np.float32),
         }
         per_k.append(rows_k)
 

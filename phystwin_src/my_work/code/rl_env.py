@@ -33,7 +33,7 @@ REPO_ROOT = MY_WORK.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from features import compute_31d_features  # noqa: E402
+from features import compute_31d_features, get_material_descriptor  # noqa: E402
 from run_closed_loop import (  # noqa: E402
     setup_trainer, infer_n_ctrl_parts_and_cfg_type,
 )
@@ -94,6 +94,22 @@ class PhysTwinForceEnv:
         self.ramp_direction = ramp_direction
         self.force_reward_scale = force_reward_scale
         self.max_action_m = max_action_m
+
+        # Material descriptor: 0-vec (Fix-A baseline), 1-vec (Fix E), 2-vec (Fix F).
+        # We infer the right dim from the feat_scaler: 43=no descriptor, 44=Fix E,
+        # 45=Fix F. If feat_scaler indicates a descriptor is expected, compute it.
+        self.material_descriptor = None
+        self.obs_dim = 43
+        if feat_scaler is not None:
+            md_dim = int(feat_scaler["mean"].shape[0]) - 43
+            if md_dim == 1:
+                from features import get_log_spring_Y_mean
+                self.material_descriptor = np.array(
+                    [get_log_spring_Y_mean(case_name)], dtype=np.float32)
+            elif md_dim == 2:
+                self.material_descriptor = get_material_descriptor(case_name)
+            self.obs_dim = 43 + md_dim
+        self.act_dim = 6
 
         # ---------- Trainer setup (one-time, heavy) ----------
         n_ctrl_parts, cfg_type = infer_n_ctrl_parts_and_cfg_type(case_name)
@@ -342,9 +358,10 @@ class PhysTwinForceEnv:
         next_idx = min(self.frame + 1, self.T - 1)
         force_goal_pad = self.F_goal[next_idx]  # [2, 3]
 
-        obs_unscaled = np.concatenate(
-            [state31, force_now_pad.flatten(), force_goal_pad.flatten()]
-        ).astype(np.float32)
+        parts = [state31, force_now_pad.flatten(), force_goal_pad.flatten()]
+        if self.material_descriptor is not None:
+            parts.append(self.material_descriptor)
+        obs_unscaled = np.concatenate(parts).astype(np.float32)
         return obs_unscaled  # caller applies feat_scaler
 
     def get_scaled_obs(self, obs_unscaled):
@@ -410,6 +427,9 @@ class MultiCasePhysTwinEnv:
             self.sample_weights /= self.sample_weights.sum()
         self.current_env = None
         self.current_spec = None
+        # All sub-envs share obs/act dims (set by feat_scaler shape)
+        self.obs_dim = self.envs[0].obs_dim
+        self.act_dim = self.envs[0].act_dim
 
     @staticmethod
     def _material_from_case(name: str) -> str:
