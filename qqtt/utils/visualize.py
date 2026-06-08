@@ -8,6 +8,20 @@ import pyrender
 import trimesh
 
 
+def open_video_writer(path, fps, width, height):
+    """OpenCV VideoWriter with codec fallbacks (AWS headless often lacks H.264/avc1)."""
+    for codec in ("mp4v", "avc1", "XVID"):
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        writer = cv2.VideoWriter(path, fourcc, fps, (width, height))
+        if writer.isOpened():
+            return writer
+        writer.release()
+    raise RuntimeError(
+        f"Could not open VideoWriter for {path}. "
+        "Try: conda install -c conda-forge ffmpeg, or use imageio_ffmpeg."
+    )
+
+
 def visualize_pc(
     object_points,
     object_colors=None,
@@ -61,15 +75,18 @@ def visualize_pc(
 
     # The pcs is a 4d pcd numpy array with shape (n_frames, n_points, 3)
     vis = o3d.visualization.Visualizer()
-    vis.create_window(visible=visualize, width=width, height=height)
+    if not vis.create_window(visible=visualize, width=width, height=height):
+        raise RuntimeError(
+            "Open3D could not create a render window (headless server). "
+            "Run under a virtual display, e.g.: xvfb-run -a python visualize_force.py ..."
+        )
 
     if save_video and visualize:
         raise ValueError("Cannot save video and visualize at the same time.")
 
     # Initialize video writer if save_video is True
     if save_video:
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Codec for .mp4 file format
-        video_writer = cv2.VideoWriter(save_path, fourcc, FPS, (width, height))
+        video_writer = open_video_writer(save_path, FPS, width, height)
 
     if controller_points is not None:
         controller_meshes = []

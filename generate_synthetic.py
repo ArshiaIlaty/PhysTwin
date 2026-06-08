@@ -85,7 +85,26 @@ MAX_DISP_RATIO = 2.0         # reject if any particle moves > 2 × donor bbox di
 OUT_DIR = "dataset_synth_raw"
 
 
-def _setup_trainer(case_name: str, n_ctrl_parts: int, cfg_type: str):
+def _donor_ready(case_name: str) -> bool:
+    """Return True if all local artifacts exist to drive this donor case."""
+    base = Path(f"./data/different_types/{case_name}")
+    needed = [
+        base / "calibrate.pkl",
+        base / "metadata.json",
+        base / "final_data.pkl",
+        Path(f"./experiments_optimization/{case_name}/optimal_params.pkl"),
+    ]
+    for p in needed:
+        if not p.exists():
+            print(f"!! skipping donor {case_name}: missing {p}")
+            return False
+    if not glob.glob(f"experiments/{case_name}/train/best_*.pth"):
+        print(f"!! skipping donor {case_name}: no experiments/{case_name}/train/best_*.pth")
+        return False
+    return True
+
+
+def _setup_trainer(case_name: str, n_ctrl_parts: int, cfg_type: str, device: str = "cuda:0"):
     """Reproduce extract_dataset.py's trainer construction."""
     # Imports kept inside the function — they pull in the full qqtt stack
     # which initializes Warp and CUDA on import.
@@ -94,6 +113,8 @@ def _setup_trainer(case_name: str, n_ctrl_parts: int, cfg_type: str):
 
     cfg_file = "configs/cloth.yaml" if cfg_type == "cloth" else "configs/real.yaml"
     cfg.load_from_yaml(cfg_file)
+    if device == "cpu":
+        cfg.use_graph = False
 
     base_path = "./data/different_types"
     base_dir = f"./experiments/{case_name}"
@@ -116,6 +137,7 @@ def _setup_trainer(case_name: str, n_ctrl_parts: int, cfg_type: str):
         data_path=f"{base_path}/{case_name}/final_data.pkl",
         base_dir=base_dir,
         pure_inference_mode=True,
+        device=device,
     )
     best_models = glob.glob(f"experiments/{case_name}/train/best_*.pth")
     assert best_models, f"No best_*.pth for {case_name}"
@@ -349,6 +371,8 @@ def main():
             continue
         material_summary = {"accepted": 0, "rejected": 0, "by_donor": {}}
         for d_idx, (case_name, n_ctrl_parts, cfg_type) in enumerate(DONORS[m]):
+            if not _donor_ready(case_name):
+                continue
             seed_per_donor = args.seed * 1000 + d_idx
             s = generate_for_donor(m, case_name, n_ctrl_parts, cfg_type,
                                     n_per_motion=args.n_per_motion, T=args.T,
