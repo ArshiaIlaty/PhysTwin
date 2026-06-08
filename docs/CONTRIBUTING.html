@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contribute — PhysTwin Force Learning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="site-nav-inner">
+    <a class="brand" href="index.html">PhysTwin Force Learning</a>
+    <a href="index.html">← Back to site</a>
+  </div>
+</nav>
+
+<section style="padding-top:2rem;">
+  <h2>Contributing to the Project Website</h2>
+  <p>This site lives in <code>docs/</code> and deploys via GitHub Pages from the <code>main</code> branch.</p>
+
+  <h3>Enable GitHub Pages (one-time)</h3>
+  <ol>
+    <li>Push the <code>docs/</code> folder to <code>main</code>.</li>
+    <li>Repo → <strong>Settings → Pages</strong>.</li>
+    <li>Source: <strong>Deploy from branch</strong> → branch <code>main</code>, folder <code>/docs</code>.</li>
+    <li>Site URL: <code>https://arshiailaty.github.io/PhysTwin/</code></li>
+  </ol>
+
+  <h3>Sync Arshia’s figures after re-running experiments</h3>
+  <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>bash docs/sync_assets.sh
+git add docs/
+git commit -m "Update website assets"
+git push</code></pre>
+
+  <h3>Malak — add closed-loop results</h3>
+  <div class="card malak">
+    <p><strong>1. Export rollout metrics</strong></p>
+    <p>After a closed-loop policy rollout, export per-step forces to CSV (columns: <code>target_force</code>, <code>achieved_force</code>). Template: <code>arshia_work/malak_closed_loop_forces_TEMPLATE.csv</code>.</p>
+
+    <p><strong>2. Generate comparison figure</strong></p>
+    <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>python plot_open_closed_force_comparison.py \
+  --closed_loop_csv arshia_work/malak_closed_loop_forces.csv</code></pre>
+    <p>Copy output to <code>docs/assets/malak/achieved_vs_target.png</code> (or update <code>open_vs_closed_force.png</code> in arshia assets).</p>
+
+    <p><strong>3. Add policy rollout video</strong></p>
+    <p>Render sim video of the policy driving the gripper. Save as <code>docs/assets/malak/policy_rollout.mp4</code>.</p>
+
+    <p><strong>4. Update <code>docs/index.html</code></strong></p>
+    <p>Replace the placeholder <code>&lt;div class="placeholder"&gt;</code> blocks in the <code>#closed-loop</code> section with:</p>
+    <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>&lt;figure class="figure"&gt;
+  &lt;img src="assets/malak/achieved_vs_target.png" alt="Achieved vs target force"&gt;
+  &lt;p class="caption"&gt;Closed-loop force tracking on cloth.&lt;/p&gt;
+&lt;/figure&gt;
+
+&lt;figure class="figure"&gt;
+  &lt;video controls width="100%"&gt;
+    &lt;source src="assets/malak/policy_rollout.mp4" type="video/mp4"&gt;
+  &lt;/video&gt;
+  &lt;p class="caption"&gt;Policy rollout in PhysTwin.&lt;/p&gt;
+&lt;/figure&gt;</code></pre>
+
+    <p><strong>5. Add metrics table (optional)</strong></p>
+    <p>Insert a table under the closed-loop section with MAE, success rate, or replay vs novel-target results.</p>
+  </div>
+
+  <h3>File layout</h3>
+  <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>docs/
+├── index.html          # main page — edit sections here
+├── CONTRIBUTING.html   # this page
+├── css/style.css
+├── js/main.js
+├── sync_assets.sh      # copy figures from arshia_work/
+└── assets/
+    ├── arshia/         # forward force + scenario plots
+    ├── malak/          # closed-loop plots + videos (Malak adds here)
+    └── phystwin/       # teaser + force GIFs from upstream</code></pre>
+
+  <h3>Tips</h3>
+  <ul>
+    <li>Keep images under ~2 MB for fast loading; compress PNGs if needed.</li>
+    <li>Prefer MP4 (H.264) for videos; host large files on YouTube and embed if &gt;25 MB.</li>
+    <li>Both contributors can edit <code>docs/index.html</code> — use distinct sections (<code>#open-loop</code>, <code>#closed-loop</code>).</li>
+  </ul>
+</section>
+
+<footer>
+  <p><a href="index.html">← Back to site</a></p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Learning force from deformation in PhysTwin — open-loop physics sweeps and closed-loop force control for deformable objects.">
+  <title>PhysTwin Force Learning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="site-nav-inner">
+    <a class="brand" href="#">PhysTwin Force Learning</a>
+    <a href="#overview">Overview</a>
+    <a href="#setup">Problem Setup</a>
+    <a href="#open-loop">Open Loop</a>
+    <a href="#forward-ml">Forward ML</a>
+    <a href="#closed-loop">Closed Loop</a>
+    <a href="#comparison">Comparison</a>
+    <a href="#reproduce">Reproduce</a>
+    <a href="#future">Future Work</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <h1>Force-Aware Learning in PhysTwin:<br>Open-Loop Characterization &amp; Closed-Loop Control</h1>
+  <p class="subtitle">
+    Two complementary research tracks built on the
+    <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>
+    spring-mass simulator — predicting contact force from deformation, and commanding force through learned gripper policies.
+  </p>
+  <p class="authors">
+    <span>Arshia Ilaty</span> ·
+    <span>Malak Gamal El-Din</span>
+  </p>
+  <p class="affiliation">University of California, Irvine</p>
+  <div class="hero-links">
+    <a class="btn btn-primary" href="https://github.com/ArshiaIlaty/PhysTwin" target="_blank" rel="noopener">Code</a>
+    <a class="btn" href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin Paper</a>
+    <a class="btn" href="CONTRIBUTING.html">Contribute</a>
+  </div>
+  <img class="teaser-img" src="assets/phystwin/teaser.png" alt="PhysTwin reconstructs deformable objects from video" width="800">
+</header>
+
+<section id="overview">
+  <h2>Overview</h2>
+  <p class="lead">
+    This is <strong>not</strong> a vision-language-action (VLA) policy. We operate inside a
+    <em>physics-informed digital twin</em> fitted from real videos. Inputs are compact deformation
+    descriptors over simulated particles; outputs are 3D contact wrenches or gripper motions.
+    Labels come from the simulator’s spring forces — not from physical force sensors.
+  </p>
+
+  <div class="split-diagram">
+    <div class="split-col arshia">
+      <h4><span class="tag tag-arshia">Arshia</span> Open loop + forward</h4>
+      <ul>
+        <li>Fix gripper motion (teacher forcing)</li>
+        <li>Sweep stiffness &amp; surface proxies</li>
+        <li>Train MLP: deformation → net force</li>
+        <li>Question: <em>What force does this deformation imply?</em></li>
+      </ul>
+    </div>
+    <div class="split-mid">same<br>simulator</div>
+    <div class="split-col malak">
+      <h4><span class="tag tag-malak">Malak</span> Closed loop + inverse</h4>
+      <ul>
+        <li>Policy drives gripper each step (student forcing)</li>
+        <li>Input: state + force goal</li>
+        <li>Output: per-group gripper displacement</li>
+        <li>Question: <em>What motion achieves this force?</em></li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Why this setting is novel</h3>
+  <p>
+    Prior work such as
+    <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>
+    focuses on reconstructing geometry and physics from video, then simulating under human or keyboard control.
+    We extend the simulator into a <strong>force-aware learning testbed</strong>: (1) counterfactual physics sweeps
+    without new videos, and (2) learned mappings between deformation and wrench — forward and inverse —
+    with explicit train/test splits that separate within-trajectory interpolation from cross-manipulation generalization.
+  </p>
+
+  <div class="gif-row">
+    <figure>
+      <img src="assets/phystwin/force_cloth.gif" alt="Force visualization on cloth">
+      <p class="caption">Cloth — sim force arrows</p>
+    </figure>
+    <figure>
+      <img src="assets/phystwin/force_rope.gif" alt="Force visualization on rope">
+      <p class="caption">Rope — sim force arrows</p>
+    </figure>
+    <figure>
+      <img src="assets/phystwin/force_sloth.gif" alt="Force visualization on sloth toy">
+      <p class="caption">Sloth — sim force arrows</p>
+    </figure>
+  </div>
+</section>
+
+<section id="setup">
+  <h2>Problem Setup</h2>
+  <p>Ground truth forces are computed inside PhysTwin’s optimized spring-mass model: for each control group, spring forces between gripper points and object particles are summed into a per-group wrench, then aggregated into a net wrench <code>y_net ∈ ℝ³</code>.</p>
+
+  <div class="table-scroll card">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>Forward model <span class="tag tag-arshia">Arshia</span></th>
+          <th>Closed-loop policy <span class="tag tag-malak">Malak</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Goal</strong></td>
+          <td>Predict net contact wrench from deformation</td>
+          <td>Drive gripper to track a target force profile</td>
+        </tr>
+        <tr>
+          <td><strong>Input</strong></td>
+          <td>35-dim particle summary features (+ material tag)</td>
+          <td>State features + current force + force goal</td>
+        </tr>
+        <tr>
+          <td><strong>Output</strong></td>
+          <td><code>[Fx, Fy, Fz]</code> net wrench</td>
+          <td>Per-group gripper centroid Δ (6-D, padded for 2 hands)</td>
+        </tr>
+        <tr>
+          <td><strong>Supervision</strong></td>
+          <td>Sim spring forces from <code>extract_force_data()</code></td>
+          <td>Recorded trajectories + synthetic rollouts (~30k rows)</td>
+        </tr>
+        <tr>
+          <td><strong>Evaluation</strong></td>
+          <td>Pred vs actual force (R², MAE)</td>
+          <td>Achieved vs target force in live sim rollouts</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>What the 35-dim descriptor captures</h3>
+  <p>Variable particle counts are collapsed into fixed-size statistics — no raw point cloud at inference:</p>
+  <ul>
+    <li><strong>Shape change</strong> — centroid displacement, bounding-box deformation</li>
+    <li><strong>Motion</strong> — velocity magnitudes, kinetic-energy-like terms</li>
+    <li><strong>Contact</strong> — distance from particles to controller</li>
+    <li><strong>Context</strong> — material category one-hot</li>
+  </ul>
+</section>
+
+<section id="open-loop">
+  <h2><span class="tag tag-arshia">Arshia</span> Open-Loop Physics Sweeps</h2>
+  <p>
+    <strong>Teacher forcing:</strong> replay a fixed synthetic gripper script with no feedback.
+    The only variables are physics knobs — object stiffness (×0.5, ×1.0, ×2.0) and surface proxies
+    (concrete, grass, rubber). Same motion every time; measure how peak contact force responds.
+  </p>
+
+  <ol class="flow">
+    <li>Pick donor case per material (cloth, rope, sloth) and a motion script (<code>hold_release</code> or <code>linear_push</code>).</li>
+    <li>Replay identical controller trajectory while scaling stiffness and swapping surface friction/restitution.</li>
+    <li>Record per-frame net wrench from the simulator — 27 scenarios (54 in expanded grid).</li>
+    <li>Plot peak force vs stiffness and force trajectories over time.</li>
+  </ol>
+
+  <figure class="figure">
+    <img src="assets/arshia/peak_force_vs_stiffness.png" alt="Peak net force increases monotonically with stiffness for cloth, rope, and sloth">
+    <p class="caption"><strong>Main result:</strong> for fixed motion, stiffer objects produce higher peak force (+40–90% across materials). Surface friction is secondary for these motions.</p>
+  </figure>
+
+  <div class="figure-grid">
+    <figure class="figure">
+      <img src="assets/arshia/peak_force_vs_surface.png" alt="Peak force by surface proxy">
+      <p class="caption">Peak force vs surface (averaged)</p>
+    </figure>
+    <figure class="figure">
+      <img src="assets/arshia/force_trajectories.png" alt="Force magnitude over time at baseline stiffness">
+      <p class="caption">|F|(t) at baseline stiffness</p>
+    </figure>
+  </div>
+
+  <div class="figure placeholder" id="stiffness-video-slot">
+    <strong>Video placeholder — stiffness comparison</strong>
+    <p>Side-by-side k=0.5 vs k=2.0 renders<br>
+    Add <code>docs/assets/arshia/compare_cloth_k0.5_vs_k2.0.mp4</code> and embed here.<br>
+    Generate: <code>xvfb-run -a python render_scenario_video.py --compare_defaults</code></p>
+  </div>
+</section>
+
+<section id="forward-ml">
+  <h2><span class="tag tag-arshia">Arshia</span> Forward ML — Deformation → Force</h2>
+  <p>
+    A per-material MLP maps summary features to net wrench. Training uses 12 real PhysTwin cases
+    in <code>dataset_v2</code>. We report two evaluation modes that answer <em>different</em> generalization questions.
+  </p>
+
+  <div class="table-scroll card arshia">
+    <table>
+      <thead>
+        <tr>
+          <th>Split</th>
+          <th>Question</th>
+          <th>How it works</th>
+          <th>Cloth R²</th>
+          <th>Rope R²</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>cross_case</strong></td>
+          <td>New manipulation held out?</td>
+          <td>Entire test case unseen (e.g. train 3 cloth cases → test <code>single_clift_cloth_1</code>)</td>
+          <td><strong>0.62</strong></td>
+          <td>negative*</td>
+        </tr>
+        <tr>
+          <td><strong>random_block</strong></td>
+          <td>Unseen frames in same trajectory?</td>
+          <td>Hold out ~20% <em>contiguous frame blocks</em> per case (not random single frames, not physics perturbations)</td>
+          <td><strong>0.90 ± 0.05</strong></td>
+          <td><strong>0.59 ± 0.05</strong></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="caption" style="text-align:left;margin-top:0.75rem;">*Rope cross-case: train single-hand push → test two-hand (<code>rope_double_hand</code>) — regime mismatch + small N, not under-training.</p>
+  </div>
+
+  <h3>Running example — cloth hold-release</h3>
+  <ol class="flow">
+    <li>Simulator runs case <code>single_clift_cloth_3</code> with recorded gripper motion.</li>
+    <li>Each frame: particle positions → 35 summary features → label = sim net wrench.</li>
+    <li>Train per-category MLP on other cloth cases; test on held-out frame blocks.</li>
+    <li>Compare predicted |F| vs simulator |F| over time.</li>
+  </ol>
+
+  <div class="figure-grid">
+    <figure class="figure">
+      <img src="assets/arshia/pred_vs_actual_cloth.png" alt="Predicted vs actual force for cloth">
+      <p class="caption">Cloth — pred vs actual (random_block split)</p>
+    </figure>
+    <figure class="figure">
+      <img src="assets/arshia/pred_vs_actual_rope.png" alt="Predicted vs actual force for rope">
+      <p class="caption">Rope — pred vs actual (random_block split)</p>
+    </figure>
+  </div>
+</section>
+
+<section id="closed-loop">
+  <h2><span class="tag tag-malak">Malak</span> Closed-Loop Force Control</h2>
+  <p>
+    <strong>Student forcing:</strong> a learned policy replaces the human keyboard. Each timestep it observes
+    deformation state and a force goal, outputs gripper displacement, and the simulator advances one frame.
+    The real evaluation is whether <em>achieved force</em> tracks <em>target force</em> in live rollouts — not just held-out frame R².
+  </p>
+
+  <h3>Running example — replay test on cloth</h3>
+  <ol class="flow">
+    <li>Reset PhysTwin to frame 0 of a test case (e.g. <code>double_lift_cloth_1</code>).</li>
+    <li>Set target trajectory <code>F_goal[t]</code> to the recorded force of that case (replay mode).</li>
+    <li>At each step: observe <code>X_t</code>, current force → policy → gripper Δ → sim step.</li>
+    <li>Plot achieved |F|(t) vs target |F|(t). Diagonal scatter = perfect tracking.</li>
+  </ol>
+
+  <div class="card malak">
+    <h3 style="margin-top:0">Policy I/O</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Source</th><th>Shape</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>state</td><td><code>X[t]</code> deformation features</td><td>31–35</td></tr>
+          <tr><td>force_now</td><td><code>y_per_ctrl[t]</code></td><td>2 × 3</td></tr>
+          <tr><td>force_goal</td><td><code>y_per_ctrl[t+1]</code> or synthetic ramp</td><td>2 × 3</td></tr>
+          <tr><td>action</td><td>per-group centroid Δ of controller</td><td>2 × 3</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="figure-grid">
+    <figure class="figure">
+      <div class="placeholder" id="malak-closed-loop-plot">
+        <strong>Malak — add closed-loop plot</strong>
+        <p>Export rollout CSV → regenerate comparison figure<br>
+        <code>docs/assets/malak/achieved_vs_target.png</code></p>
+      </div>
+      <p class="caption">Achieved vs target force (closed-loop rollout)</p>
+    </figure>
+    <figure class="figure">
+      <div class="placeholder" id="malak-policy-video">
+        <strong>Malak — add policy rollout video</strong>
+        <p>Sim video of policy driving gripper<br>
+        <code>docs/assets/malak/policy_rollout.mp4</code></p>
+      </div>
+      <p class="caption">Policy driving the simulator (qualitative demo)</p>
+    </figure>
+  </div>
+
+  <p class="caption">
+    <strong>To contribute:</strong> see <a href="CONTRIBUTING.html">CONTRIBUTING</a> —
+    drop figures/videos in <code>docs/assets/malak/</code> and update this section in <code>docs/index.html</code>.
+  </p>
+</section>
+
+<section id="comparison">
+  <h2>Open Loop vs Closed Loop</h2>
+  <p>Same scatter format, different questions. Left: can deformation predict force? Right: can the policy hit a force goal?</p>
+
+  <figure class="figure">
+    <img src="assets/arshia/open_vs_closed_force.png" alt="Open-loop predicted vs actual force (left) and closed-loop achieved vs target force placeholder (right)">
+    <p class="caption">Left panel — forward model (Arshia). Right panel — closed-loop tracking (Malak; populate via <code>malak_closed_loop_forces.csv</code>).</p>
+  </figure>
+</section>
+
+<section id="reproduce">
+  <h2>Reproduce</h2>
+  <div class="card">
+    <h3 style="margin-top:0">Arshia — three-step pipeline</h3>
+    <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>conda activate phystwin
+cd PhysTwin
+bash arshia_work/run_my_three_steps.sh</code></pre>
+    <p class="caption">Steps: (1) scenario sweeps → (2) sensitivity plots → (3) forward MLP training.</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Malak — closed-loop pipeline</h3>
+    <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>bash arshia_work/run_policy_data_pipeline.sh   # build policy dataset
+# train policy → closed-loop rollout → export CSV for comparison plot</code></pre>
+    <p class="caption">Docs: <code>phystwin_src/my_work/docs/closed_loop_control/</code></p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Sync website assets after regenerating figures</h3>
+    <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>bash docs/sync_assets.sh</code></pre>
+  </div>
+</section>
+
+<section id="future">
+  <h2>Future Work</h2>
+  <ul>
+    <li><strong>Latent stiffness embedding</strong> — categorize / condition on material stiffness without explicit knobs</li>
+    <li><strong>Temporal backbone</strong> — transformer or GRU over feature windows instead of frame-independent MLP</li>
+    <li><strong>Context adapter</strong> — inject external task descriptions (VLA-style summarization) into the policy</li>
+    <li><strong>More qualitative demos</strong> — side-by-side stiffness videos, closed-loop rollout recordings</li>
+  </ul>
+</section>
+
+<footer>
+  <p>
+    Built on
+    <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>
+    ·
+    <a href="https://github.com/ArshiaIlaty/PhysTwin" target="_blank" rel="noopener">GitHub</a>
+    ·
+    <a href="CONTRIBUTING.html">Contribute to this page</a>
+  </p>
+  <p>Website template inspired by academic project pages. Not an official PhysTwin publication.</p>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>
