@@ -213,15 +213,26 @@ def concat(cases):
 
 
 class ForceMLP(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden: int = 256):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden: int = 256,
+        layers: int = 2,
+        dropout: float = 0.0,
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, output_dim),
-        )
+        if layers < 1:
+            raise ValueError("layers must be >= 1")
+        blocks: list[nn.Module] = []
+        in_dim = input_dim
+        for i in range(layers):
+            blocks.extend([nn.Linear(in_dim, hidden), nn.ReLU()])
+            if dropout > 0:
+                blocks.append(nn.Dropout(dropout))
+            in_dim = hidden
+        blocks.append(nn.Linear(in_dim, output_dim))
+        self.net = nn.Sequential(*blocks)
 
     def forward(self, x):
         return self.net(x)
@@ -232,10 +243,12 @@ def train_mlp(
     input_dim: int, output_dim: int,
     epochs: int = 300, batch_size: int = 256, lr: float = 1e-3,
     device: str = "cpu", patience: int = 30,
+    hidden: int = 256, layers: int = 2, dropout: float = 0.0,
+    weight_decay: float = 0.0,
 ) -> tuple[ForceMLP, list[float], list[float]]:
     device_t = torch.device(device)
-    model = ForceMLP(input_dim, output_dim).to(device_t)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    model = ForceMLP(input_dim, output_dim, hidden=hidden, layers=layers, dropout=dropout).to(device_t)
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.MSELoss()
 
     X_train_t = torch.from_numpy(X_train).to(device_t)
@@ -304,6 +317,14 @@ def run_pipeline(
     scaler_mode: str = "pooled",
     split_seed: int = 0,
     extra_train_by_cat: dict[str, list[dict]] | None = None,
+    mlp_epochs: int = 300,
+    mlp_patience: int = 30,
+    mlp_hidden: int = 256,
+    mlp_layers: int = 2,
+    mlp_dropout: float = 0.0,
+    mlp_lr: float = 1e-3,
+    mlp_weight_decay: float = 0.0,
+    mlp_batch_size: int = 256,
 ):
     """Train + evaluate the three model families.
 
@@ -388,6 +409,9 @@ def run_pipeline(
     mlp_unified, train_h, val_h = train_mlp(
         Xs_train, ys_train, Xs_test, ys_test,
         input_dim=input_dim, output_dim=output_dim, device=device,
+        epochs=mlp_epochs, patience=mlp_patience, hidden=mlp_hidden,
+        layers=mlp_layers, dropout=mlp_dropout, lr=mlp_lr,
+        weight_decay=mlp_weight_decay, batch_size=mlp_batch_size,
     )
     torch.save(mlp_unified.state_dict(), os.path.join(out_dir, "mlp_unified.pt"))
     results.setdefault("mlp_unified", {})
@@ -444,6 +468,9 @@ def run_pipeline(
         model, _, _ = train_mlp(
             Xs_tr, ys_tr, Xs_te, ys_te,
             input_dim=input_dim, output_dim=output_dim, device=device,
+            epochs=mlp_epochs, patience=mlp_patience, hidden=mlp_hidden,
+            layers=mlp_layers, dropout=mlp_dropout, lr=mlp_lr,
+            weight_decay=mlp_weight_decay, batch_size=mlp_batch_size,
         )
         torch.save(model.state_dict(), os.path.join(out_dir, f"mlp_{cat}.pt"))
         model.eval()
@@ -462,6 +489,18 @@ def run_pipeline(
                 "target_key": target_key,
                 "input_dim": int(input_dim),
                 "output_dim": int(output_dim),
+                "split": split,
+                "scaler_mode": scaler_mode,
+                "mlp_config": {
+                    "epochs": mlp_epochs,
+                    "patience": mlp_patience,
+                    "hidden": mlp_hidden,
+                    "layers": mlp_layers,
+                    "dropout": mlp_dropout,
+                    "lr": mlp_lr,
+                    "weight_decay": mlp_weight_decay,
+                    "batch_size": mlp_batch_size,
+                },
                 "results": results,
                 "train_test_split": {
                     cat: {
@@ -511,6 +550,14 @@ def main() -> None:
                         help="Directory of additional .npz files (same schema as --dataset_dir) "
                              "to add to the TRAINING pool only. Test split never sees them. "
                              "Use this for synthetic trajectories.")
+    parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--patience", type=int, default=30)
+    parser.add_argument("--hidden", type=int, default=256)
+    parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--batch_size", type=int, default=256)
     args = parser.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -533,7 +580,11 @@ def main() -> None:
                  if args.extra_train_dir else None)
         run_pipeline(by_cat, args.out_dir, args.target, device, split=args.split,
                      scaler_mode=args.scaler_mode, split_seed=args.seed,
-                     extra_train_by_cat=extra)
+                     extra_train_by_cat=extra,
+                     mlp_epochs=args.epochs, mlp_patience=args.patience,
+                     mlp_hidden=args.hidden, mlp_layers=args.layers,
+                     mlp_dropout=args.dropout, mlp_lr=args.lr,
+                     mlp_weight_decay=args.weight_decay, mlp_batch_size=args.batch_size)
 
 
 def run_multi_seed(seeds: list[int], args, device: str,
@@ -564,7 +615,11 @@ def run_multi_seed(seeds: list[int], args, device: str,
                                  exclude_categories=exclude_categories)
         run_pipeline(by_cat, seed_dir, args.target, device, split=args.split,
                      scaler_mode=args.scaler_mode, split_seed=s,
-                     extra_train_by_cat=extra)
+                     extra_train_by_cat=extra,
+                     mlp_epochs=args.epochs, mlp_patience=args.patience,
+                     mlp_hidden=args.hidden, mlp_layers=args.layers,
+                     mlp_dropout=args.dropout, mlp_lr=args.lr,
+                     mlp_weight_decay=args.weight_decay, mlp_batch_size=args.batch_size)
         with open(os.path.join(seed_dir, "metrics.json")) as f:
             m = json.load(f)
         for model_name, by_cat_metrics in m["results"].items():

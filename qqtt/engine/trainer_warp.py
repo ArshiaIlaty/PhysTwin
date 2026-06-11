@@ -1,5 +1,6 @@
 from qqtt.data import RealData, SimpleData
 from qqtt.utils import logger, visualize_pc, cfg
+from qqtt.utils.visualize import open_video_writer
 from qqtt.model.diff_simulator import (
     SpringMassSystemWarp,
 )
@@ -40,6 +41,18 @@ import copy
 import time
 import threading
 import time
+
+
+def _sync_device() -> None:
+    if str(cfg.device).startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _sim_forward_step(simulator) -> None:
+    if cfg.use_graph:
+        wp.capture_launch(simulator.forward_graph)
+    else:
+        simulator.step()
 
 
 class InvPhyTrainerWarp:
@@ -513,7 +526,7 @@ class InvPhyTrainerWarp:
                     self.simulator.update_collision_graph()
 
                 if cfg.use_graph:
-                    wp.capture_launch(self.simulator.forward_graph)
+                    _sim_forward_step(self.simulator)
                 else:
                     self.simulator.step()
                 x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
@@ -1089,7 +1102,7 @@ class InvPhyTrainerWarp:
 
             def start(self):
                 if self.use_cuda:
-                    torch.cuda.synchronize()
+                    _sync_device()
                     self.cuda_start_event = torch.cuda.Event(enable_timing=True)
                     self.cuda_end_event = torch.cuda.Event(enable_timing=True)
                     self.cuda_start_event.record()
@@ -1098,7 +1111,7 @@ class InvPhyTrainerWarp:
             def stop(self):
                 if self.use_cuda:
                     self.cuda_end_event.record()
-                    torch.cuda.synchronize()
+                    _sync_device()
                     self.elapsed = (
                         self.cuda_start_event.elapsed_time(self.cuda_end_event) / 1000
                     )  # convert ms to seconds
@@ -1149,7 +1162,7 @@ class InvPhyTrainerWarp:
             self.simulator.set_controller_interactive(prev_target, current_target)
             if self.simulator.object_collision_flag:
                 self.simulator.update_collision_graph()
-            wp.capture_launch(self.simulator.forward_graph)
+            _sim_forward_step(self.simulator)
             x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
             # Set the intial state for the next step
             self.simulator.set_init_state(
@@ -1160,7 +1173,7 @@ class InvPhyTrainerWarp:
             sim_time = sim_timer.stop()
             component_times["simulator"].append(sim_time)
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             # 2. Frame initialization and setup
 
@@ -1172,7 +1185,7 @@ class InvPhyTrainerWarp:
                 frame_timer.stop()
             )  # We'll accumulate times for frame compositing
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             # 3. Rendering
             render_timer.start()
@@ -1185,7 +1198,7 @@ class InvPhyTrainerWarp:
             render_time = render_timer.stop()
             component_times["rendering"].append(render_time)
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             # Continue frame compositing
             frame_timer.start()
@@ -1259,7 +1272,7 @@ class InvPhyTrainerWarp:
             )  # Total frame compositing time
             component_times["frame_compositing"].append(frame_comp_time)
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             if prev_x is not None:
                 with torch.no_grad():
@@ -1300,7 +1313,7 @@ class InvPhyTrainerWarp:
                 interp_time = interp_timer.stop()
                 component_times["full_motion_interpolation"].append(interp_time)
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             prev_x = x.clone()
 
@@ -1435,14 +1448,39 @@ class InvPhyTrainerWarp:
         )
         return view
 
-    def visualize_force(self, model_path, gs_path, n_ctrl_parts=2, force_scale=30000):
+    def visualize_force(
+        self,
+        model_path,
+        gs_path,
+        n_ctrl_parts=2,
+        force_scale=30000,
+        stiffness_scale=1.0,
+        collide_elas=None,
+        collide_fric=None,
+        video_path=None,
+    ):
         # Load the model
         logger.info(f"Load model from {model_path}")
         checkpoint = torch.load(model_path, map_location=cfg.device)
 
-        spring_Y = checkpoint["spring_Y"]
-        collide_elas = checkpoint["collide_elas"]
-        collide_fric = checkpoint["collide_fric"]
+        spring_Y = checkpoint["spring_Y"].clone()
+        collide_elas_ckpt = checkpoint["collide_elas"]
+        collide_fric_ckpt = checkpoint["collide_fric"]
+        if stiffness_scale != 1.0:
+            num_object_springs = checkpoint["num_object_springs"]
+            spring_Y[:num_object_springs] = spring_Y[:num_object_springs] * float(
+                stiffness_scale
+            )
+        collide_elas = (
+            torch.tensor([float(collide_elas)], dtype=torch.float32, device=cfg.device)
+            if collide_elas is not None
+            else collide_elas_ckpt
+        )
+        collide_fric = (
+            torch.tensor([float(collide_fric)], dtype=torch.float32, device=cfg.device)
+            if collide_fric is not None
+            else collide_fric_ckpt
+        )
         collide_object_elas = checkpoint["collide_object_elas"]
         collide_object_fric = checkpoint["collide_object_fric"]
         num_object_springs = checkpoint["num_object_springs"]
@@ -1460,7 +1498,8 @@ class InvPhyTrainerWarp:
             collide_object_fric.detach().clone(),
         )
 
-        video_path = f"{cfg.base_dir}/force_visualization.mp4"
+        if video_path is None:
+            video_path = f"{cfg.base_dir}/force_visualization.mp4"
 
         vis_cam_idx = 0
         FPS = cfg.FPS
@@ -1544,9 +1583,12 @@ class InvPhyTrainerWarp:
         ).clone()
 
         vis = o3d.visualization.Visualizer()
-        vis.create_window(visible=False, width=width, height=height)
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Codec for .mp4 file format
-        video_writer = cv2.VideoWriter(video_path, fourcc, FPS, (width, height))
+        if not vis.create_window(visible=False, width=width, height=height):
+            raise RuntimeError(
+                "Open3D could not create a render window (headless server). "
+                "Run with: xvfb-run -a python visualize_force.py ..."
+            )
+        video_writer = open_video_writer(video_path, FPS, width, height)
 
         frame_path = f"{cfg.overlay_path}/{vis_cam_idx}/0.png"
         frame = cv2.imread(frame_path)
@@ -1628,7 +1670,7 @@ class InvPhyTrainerWarp:
             if self.simulator.object_collision_flag:
                 self.simulator.update_collision_graph()
 
-            wp.capture_launch(self.simulator.forward_graph)
+            _sim_forward_step(self.simulator)
             x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
             # Set the intial state for the next step
             self.simulator.set_init_state(
@@ -1636,7 +1678,7 @@ class InvPhyTrainerWarp:
                 self.simulator.wp_states[-1].wp_v,
             )
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             with torch.no_grad():
                 # Do LBS on the gaussian kernels
@@ -1754,9 +1796,20 @@ class InvPhyTrainerWarp:
         vis.destroy_window()
         video_writer.release()
 
-    def extract_force_data(self, model_path, n_ctrl_parts=1):
+    def extract_force_data(
+        self,
+        model_path,
+        n_ctrl_parts=1,
+        stiffness_scale=1.0,
+        collide_elas=None,
+        collide_fric=None,
+    ):
         """Run inference simulation and return per-timestep object-particle
         positions and net control-point forces, without rendering.
+
+        Optional scenario overrides (for counterfactual sweeps):
+            stiffness_scale: multiply object spring_Y by this factor (default 1.0).
+            collide_elas / collide_fric: override ground contact scalars.
 
         Returns:
             positions:        np.ndarray [T, N_all_points, 3] (simulated object particles)
@@ -1767,12 +1820,25 @@ class InvPhyTrainerWarp:
         logger.info(f"[extract_force_data] Load model from {model_path}")
         checkpoint = torch.load(model_path, map_location=cfg.device)
 
-        spring_Y = checkpoint["spring_Y"]
+        spring_Y = checkpoint["spring_Y"].clone()
         collide_elas = checkpoint["collide_elas"]
         collide_fric = checkpoint["collide_fric"]
         collide_object_elas = checkpoint["collide_object_elas"]
         collide_object_fric = checkpoint["collide_object_fric"]
         num_object_springs = checkpoint["num_object_springs"]
+
+        if stiffness_scale != 1.0:
+            spring_Y[:num_object_springs] = spring_Y[:num_object_springs] * float(
+                stiffness_scale
+            )
+        if collide_elas is not None:
+            collide_elas = torch.tensor(
+                [float(collide_elas)], dtype=torch.float32, device=cfg.device
+            )
+        if collide_fric is not None:
+            collide_fric = torch.tensor(
+                [float(collide_fric)], dtype=torch.float32, device=cfg.device
+            )
 
         assert (
             len(spring_Y) == self.simulator.n_springs
@@ -1858,13 +1924,13 @@ class InvPhyTrainerWarp:
             if self.simulator.object_collision_flag:
                 self.simulator.update_collision_graph()
 
-            wp.capture_launch(self.simulator.forward_graph)
+            _sim_forward_step(self.simulator)
             x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
             self.simulator.set_init_state(
                 self.simulator.wp_states[-1].wp_x,
                 self.simulator.wp_states[-1].wp_v,
             )
-            torch.cuda.synchronize()
+            _sync_device()
 
             positions[i] = x.detach().cpu().numpy()
             forces[i] = _ctrl_forces(x, i)
@@ -1959,9 +2025,12 @@ class InvPhyTrainerWarp:
         ).clone()
 
         vis = o3d.visualization.Visualizer()
-        vis.create_window(visible=False, width=width, height=height)
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Codec for .mp4 file format
-        video_writer = cv2.VideoWriter(video_path, fourcc, FPS, (width, height))
+        if not vis.create_window(visible=False, width=width, height=height):
+            raise RuntimeError(
+                "Open3D could not create a render window (headless server). "
+                "Run with: xvfb-run -a python visualize_force.py ..."
+            )
+        video_writer = open_video_writer(video_path, FPS, width, height)
 
         frame_path = f"{cfg.overlay_path}/{vis_cam_idx}/0.png"
         frame = cv2.imread(frame_path)
@@ -2082,7 +2151,7 @@ class InvPhyTrainerWarp:
             if self.simulator.object_collision_flag:
                 self.simulator.update_collision_graph()
 
-            wp.capture_launch(self.simulator.forward_graph)
+            _sim_forward_step(self.simulator)
             x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
             # Set the intial state for the next step
             self.simulator.set_init_state(
@@ -2090,7 +2159,7 @@ class InvPhyTrainerWarp:
                 self.simulator.wp_states[-1].wp_v,
             )
 
-            torch.cuda.synchronize()
+            _sync_device()
 
             with torch.no_grad():
                 # Do LBS on the gaussian kernels

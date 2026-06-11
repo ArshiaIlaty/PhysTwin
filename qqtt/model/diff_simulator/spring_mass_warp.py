@@ -3,7 +3,6 @@ from qqtt.utils import logger, cfg
 import warp as wp
 
 wp.init()
-wp.set_device("cuda:0")
 if not cfg.use_graph:
     wp.config.mode = "debug"
     wp.config.verbose = True
@@ -599,6 +598,7 @@ class SpringMassSystemWarp:
     ):
         logger.info(f"[SIMULATION]: Initialize the Spring-Mass System")
         self.device = cfg.device
+        wp.set_device(self.device)
 
         # Record the parameters
         self.wp_init_vertices = wp.from_torch(
@@ -732,10 +732,16 @@ class SpringMassSystemWarp:
             self.wp_states.append(state)
         if cfg.data_type == "real":
             self.distance_matrix = wp.zeros(
-                (self.num_original_points, self.num_surface_points), requires_grad=False
+                (self.num_original_points, self.num_surface_points),
+                dtype=wp.float32,
+                device=self.device,
+                requires_grad=False,
             )
             self.neigh_indices = wp.zeros(
-                (self.num_original_points), dtype=wp.int32, requires_grad=False
+                (self.num_original_points,),
+                dtype=wp.int32,
+                device=self.device,
+                requires_grad=False,
             )
 
         # Parameter to be optimized

@@ -15,14 +15,17 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from ..scene.gaussian_model import GaussianModel
 from ..utils.sh_utils import eval_sh
 from torch.nn import functional as F
-from gsplat import rasterization
-
-
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, use_gsplat=True, antialiased=False, separate_sh = False, use_trained_exp=False):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, use_gsplat=False, antialiased=False, separate_sh = False, use_trained_exp=False):
     if use_gsplat:
         return render_gsplat(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color, antialiased)
     else:
-        return render_3dgs(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, separate_sh, override_color, use_trained_exp)
+        out = render_3dgs(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, separate_sh, override_color, use_trained_exp)
+        # Match gsplat's RGBA layout expected by visualize_force / interactive_playground.
+        if out["render"].shape[0] == 3:
+            rgb = out["render"]
+            alpha = (1.0 - rgb).max(dim=0, keepdim=True).values.clamp(0.0, 1.0)
+            out["render"] = torch.cat([rgb, alpha], dim=0)
+        return out
 
 
 # This is code is adapted from ChatSim background gaussians model: 
@@ -33,6 +36,7 @@ def render_gsplat(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     
     Background tensor (bg_color) must be on GPU!
     """
+    from gsplat import rasterization
     # Set up rasterization configuration
     if viewpoint_camera.K is not None:
         # print("====== Use camera K ======")
@@ -174,6 +178,14 @@ def render_3dgs(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
     
     Background tensor (bg_color) must be on GPU!
     """
+    if pipe is None:
+        from types import SimpleNamespace
+        pipe = SimpleNamespace(
+            debug=False,
+            antialiasing=False,
+            compute_cov3D_python=False,
+            convert_SHs_python=False,
+        )
  
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
