@@ -106,32 +106,28 @@ def main():
         axL.plot([lo, hi], [row, row], color=MAT_COLORS[m], lw=2, alpha=0.6, zorder=1)
         axL.scatter([mean], [row], color=MAT_COLORS[m], s=40, zorder=2)
     axL.set_yticks(range(len(order)))
-    axL.set_yticklabels([cases[i] for i in order], fontsize=7)
-    axL.set_xlabel("log(spring_Y)  —  mean with q10–q90 spread")
-    axL.set_title("(a) Encoder INPUT: per-case stiffness data\n"
-                  "(stiffness only — no material label, no force scale)", fontsize=10)
+    axL.set_yticklabels([cases[i] for i in order], fontsize=7.5)
+    axL.set_xlabel("log stiffness (mean, q10 to q90)")
+    axL.set_title("(a) Encoder input: per-case stiffness only", fontsize=11)
     axL.grid(axis="x", alpha=0.3)
 
-    # RIGHT: learned latent PCA, coloured by material.
+    # RIGHT: learned latent PCA, coloured by material (no per-point labels;
+    # case-name annotations overlapped badly in the clustered region).
     seen = set()
     for i in range(len(cases)):
         m = mats[i]
-        axR.scatter(pcs[i, 0], pcs[i, 1], color=MAT_COLORS[m], s=70,
+        axR.scatter(pcs[i, 0], pcs[i, 1], color=MAT_COLORS[m], s=90,
                     edgecolor="k", linewidth=0.5,
                     label=m if m not in seen else None)
         seen.add(m)
-        axR.annotate(cases[i], (pcs[i, 0], pcs[i, 1]), fontsize=6,
-                     xytext=(4, 2), textcoords="offset points")
     axR.set_xlabel(f"latent PC1 ({var[0] * 100:.0f}% var)")
     axR.set_ylabel(f"latent PC2 ({var[1] * 100:.0f}% var)")
-    axR.set_title(f"(b) Encoder OUTPUT: learned {latents.shape[1]}-D material\n"
-                  "latent (PCA) — materials separate from stiffness alone",
-                  fontsize=10)
+    axR.set_title("(b) Learned latent: materials separate\nfrom stiffness alone", fontsize=11)
     axR.legend(title="material", loc="best")
     axR.grid(alpha=0.3)
 
-    fig.suptitle("Fix H material encoder: stiffness distribution → learned latent",
-                 fontsize=12, fontweight="bold")
+    fig.suptitle("Material encoder without privileged force scale",
+                 fontsize=13, fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=150)

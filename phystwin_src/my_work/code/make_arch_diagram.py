@@ -35,42 +35,37 @@ for j in range(4):
         f"F*\n+{j}", fs=7.5)
 
 ax.text(0.3 + 4 * (tw + 0.08) - 0.05, y0 + th + 0.55,
-        "8 past-frame tokens\n[state 31 | force_now 6 | prev_action 6]",
-        ha="center", fontsize=9)
+        "8 past frames", ha="center", fontsize=11)
 ax.text(0.3 + 8 * (tw + 0.08) + 0.25 + 2 * (tw + 0.08), y0 + th + 0.55,
-        "4 goal-preview tokens\n(commanded F*, deployment-legitimate)",
-        ha="center", fontsize=9)
+        "4-frame goal preview", ha="center", fontsize=11)
 
 # noise annotation on prev_action
-ax.annotate("training only: Gaussian noise σ=0.3\non prev_action slots (scheduled sampling)",
+ax.annotate("noise added to past actions\nduring training",
             xy=(0.3 + 5.5 * (tw + 0.08), y0), xytext=(1.0, 1.85),
-            fontsize=8.5, color="#a33",
+            fontsize=10, color="#a33",
             arrowprops=dict(arrowstyle="->", color="#a33", lw=1.0))
 
 # ---- transformer block ----
 bx, by, bw, bh = 3.4, 0.35, 4.2, 1.05
-box(bx, by, bw, bh, BLOCK, "Transformer encoder (2 layers, d=128)", fs=10, lw=1.2, weight="bold")
+box(bx, by, bw, bh, BLOCK, "Transformer encoder", fs=11, lw=1.2, weight="bold")
 # arrows tokens -> block
 ax.annotate("", xy=(bx + bw * 0.5, by + bh), xytext=(bx + bw * 0.5, y0 - 0.06),
             arrowprops=dict(arrowstyle="->", lw=1.4))
 
 # ---- FiLM conditioning ----
 cx, cy, cw, ch = 8.6, 0.35, 3.4, 1.05
-box(cx, cy, cw, ch, COND,
-    "FiLM conditioning  γ, β per layer\n[5-D stiffness stats | cmd_scale]\n(11-D physics vector in the FiLM variant)",
-    fs=8)
-ax.annotate("scale & shift\nactivations", xy=(bx + bw, by + bh / 2),
-            xytext=(cx - 0.05, cy + ch / 2), ha="right", va="center", fontsize=8.5,
+box(cx, cy, cw, ch, COND, "Material descriptor\n(FiLM conditioning)", fs=10)
+ax.annotate("", xy=(bx + bw, by + bh / 2),
+            xytext=(cx - 0.05, cy + ch / 2),
             arrowprops=dict(arrowstyle="->", lw=1.2, color="#2a7"))
 
 # ---- output ----
 ax.annotate("", xy=(1.7, by + bh / 2), xytext=(bx - 0.05, by + bh / 2),
             arrowprops=dict(arrowstyle="->", lw=1.4))
-box(0.3, by, 1.4, bh, "#f5e6bc", "action\nΔgripper (6-D)", fs=9, weight="bold")
+box(0.3, by, 1.4, bh, "#f5e6bc", "6D gripper\naction", fs=10, weight="bold")
 
-ax.set_title("Transformer policy — what the network actually sees each frame\n"
-             "(history + commanded-goal preview as tokens; material physics enters via FiLM, not as a token)",
-             fontsize=11)
+ax.set_title("Transformer policy: past frames and goal preview in, gripper action out",
+             fontsize=12)
 fig.tight_layout()
 fig.savefig(FIG_DIR / "13_transformer_arch.png", dpi=150, bbox_inches="tight")
 print("wrote", FIG_DIR / "13_transformer_arch.png")

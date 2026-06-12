@@ -142,9 +142,8 @@ for i, m in enumerate(["rope", "cloth", "sloth"]):
                 ha="center", va="bottom", fontsize=8)
 ax.set_xticks(x)
 ax.set_xticklabels(AXES)
-ax.set_ylabel("normalized axis error\n(mean |F−F*| / mean |F*|, per axis)")
-ax.set_title("Which force axis is hardest to control?\n"
-             "Per-axis tracking error by material (deployable ensemble rollouts)")
+ax.set_ylabel("normalized error")
+ax.set_title("Per-axis tracking error by material")
 ax.legend(title="material")
 ax.spines[["top", "right"]].set_visible(False)
 fig.tight_layout()
