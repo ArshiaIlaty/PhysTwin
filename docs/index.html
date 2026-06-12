@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Closed-loop force control inside a PhysTwin digital twin — learning to track force targets by driving virtual grippers on deformable objects.">
+  <meta name="description" content="Force control on deformable objects inside a PhysTwin digital twin — open-loop and closed-loop policies that turn a goal force into gripper motion.">
   <title>PhysTwin Force Learning</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -117,8 +117,78 @@
       display: block;
       box-shadow: 0 6px 24px rgba(0,0,0,0.18);
     }
+    .setup-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1.25rem 0;
+    }
+    .io-card {
+      border: 2px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 1.1rem 1.25rem;
+      background: #fafafa;
+    }
+    .io-card h4 {
+      margin: 0 0 0.6rem;
+      font-size: 1.05rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .io-card ul { margin: 0.4rem 0 0.6rem; padding-left: 1.2rem; }
+    .io-card li { margin: 0.3rem 0; }
+    .io-card .io-note { font-size: 0.88rem; color: #6b7280; margin: 0.5rem 0 0; }
+    .io-card.open { border-color: #93c5fd; background: #f5f9ff; }
+    .io-card.closed { border-color: #6ee7b7; background: #f3fdf8; }
+    .io-badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 0.1rem 0.6rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .io-card.open .io-badge { background: #dbeafe; color: #1d4ed8; }
+    .io-card.closed .io-badge { background: #d1fae5; color: #047857; }
+    .io-card .plus {
+      list-style: none;
+      margin-left: -1.2rem;
+      background: #d1fae5;
+      border-radius: 6px;
+      padding: 0.35rem 0.6rem;
+      font-weight: 600;
+      color: #065f46;
+    }
+    .mode-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1.25rem 0;
+    }
+    .mode-card {
+      border-radius: 10px;
+      padding: 1rem 1.2rem;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+    }
+    .mode-card h4 { margin: 0 0 0.4rem; font-size: 1rem; }
+    .mode-card p { margin: 0.3rem 0; font-size: 0.92rem; }
+    .mode-tag {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border-radius: 4px;
+      padding: 0.1rem 0.45rem;
+      margin-left: 0.4rem;
+      background: #e2e8f0;
+      color: #475569;
+    }
     @media (max-width: 640px) {
-      .video-pair, .video-trio { grid-template-columns: 1fr; }
+      .video-pair, .video-trio, .setup-grid, .mode-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -129,7 +199,7 @@
     <a class="brand" href="#">PhysTwin Force</a>
     <a href="#overview">Overview</a>
     <a href="#setup">Problem Setup</a>
-    <a href="#open-loop">Open Loop</a>
+    <a href="#open-loop">Forward Model</a>
     <a href="#closed-loop">Closed Loop</a>
     <a href="#comparison">Open vs Closed</a>
     <a href="#experiments">Experiments</a>
@@ -142,10 +212,10 @@
 <header class="hero">
   <h1>Inverse Force Control<br>on Deformable Objects</h1>
   <p class="subtitle">
-    Given a target contact-force trajectory on a deformable object — a rope, a sheet of cloth, a
-    plush toy — we learn the gripper motion that reproduces it. Object stiffness varies by orders of
-    magnitude, so we study both directions of the problem: predicting force from motion (open-loop)
-    and commanding force through feedback (closed-loop).
+    Given a deformable object's current state and a <strong>goal force</strong> — on a rope, a sheet
+    of cloth, a plush toy — we learn the <strong>gripper motion</strong> that produces it. We introduce
+    two methods: an <strong>open-loop</strong> policy that acts from state and goal alone, and a
+    <strong>closed-loop</strong> policy that also senses the force it is currently applying.
   </p>
   <p class="authors">
     <span>Arshia Ilaty</span> ·
@@ -173,43 +243,23 @@
   <h2>Overview</h2>
 
   <p class="lead">
-    Our goal is contact-force control on <strong>deformable objects</strong>. Given a target force
-    trajectory F*(t), can a policy move the gripper — frame by frame — so the realized force matches
-    the target, across objects as different as a slack rope, a sheet of cloth, and a dense plush toy?
-    Stiffness varies by orders of magnitude across these objects, so the same target force demands a
-    very different gripper motion for each: handling that variation is central to both the problem
-    and our contribution.
+    Our goal is <strong>contact-force control on deformable objects</strong>: move the gripper, frame
+    by frame, so the force on the object matches a target trajectory F*(t) — across objects whose
+    stiffness varies by <strong>orders of magnitude</strong>. We solve it with two methods,
+    <strong>open-loop</strong> and <strong>closed-loop</strong> control.
   </p>
   <p>
-    We run inside <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>,
+    Everything runs inside <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>,
     which reconstructs each object from RGB-D video as a calibrated spring-mass <em>digital twin</em>.
-    The twin gives us exact internal contact forces with no physical sensor and no hardware — the
-    substrate that makes controlled force-tracking experiments possible.
-  </p>
-
-  <h3>Where the ground truth comes from</h3>
-  <p>
-    There is no robot and no force sensor anywhere in this work, so it is worth stating what "force"
-    means precisely. PhysTwin fits a spring-mass model to the RGB-D video (per case), and the fitted
-    model reports the contact force at the gripper from spring stretch — exactly, every frame.
-    <strong>Ground truth here = the calibrated twin's internal spring measurements, not sensor
-    values.</strong> While this ties our accuracy to PhysTwin's calibration, it also gives an exact,
-    dense force signal at zero hardware cost, which is what makes rigorous force-tracking experiments
-    possible.
-  </p>
-
-  <h3>The inverse problem</h3>
-  <p>
-    Stated plainly: <strong>given a desired force, what gripper motion produces it on objects of
-    different stiffness and material?</strong> This inverse (force → motion) direction is our focus.
-    The forward direction (motion → force) is characterized separately as an open-loop baseline.
+    The twin's spring forces are our <strong>ground-truth force labels</strong> — exact, dense, and
+    available every frame with no physical sensor or hardware anywhere in the pipeline.
   </p>
 
   <h3>Novel contributions</h3>
   <p>
-    As the subtitle states, the contribution is the <em>setting</em>: commanded-force tracking on a
-    per-video-calibrated deformable twin, spanning a wide stiffness range. Lining up inputs, outputs,
-    and supervision against the nearest prior work makes the gap concrete:
+    The contribution is the <em>setting</em>: commanded-force tracking on a per-video-calibrated
+    deformable twin, spanning a wide stiffness range. No neighboring line of work takes a force
+    trajectory as the task specification:
   </p>
   <div class="table-scroll card">
     <table>
@@ -293,177 +343,119 @@
 <section id="setup">
   <h2>Problem Setup</h2>
 
-  <h3>What are we controlling?</h3>
-  <p>
-    At each simulation frame, the policy receives a feature vector describing the current state of the
-    object and grippers, along with the current contact force and the desired force for the next frame.
-    It outputs a 6D displacement — how to move each gripper centroid this step.
-    The simulator advances, recomputes spring forces, and the loop repeats.
+  <p class="lead">
+    <strong>Current state + goal force in → gripper motion out.</strong> Each frame, the policy reads
+    the object's current state and a goal force, and outputs a <strong>6D gripper displacement</strong>
+    so the contact force on the object matches the goal. We do this with two methods —
+    <strong>open-loop</strong> and <strong>closed-loop</strong> control.
   </p>
 
   <div class="card malak" style="margin: 1.5rem 0;">
     <div class="io-row">
       <span class="io-label">Goal</span>
-      <span>Track a target force trajectory F*(t) in a live simulation rollout</span>
-      <span class="io-label">Input (per frame)</span>
-      <span>~45-dim feature vector: particle statistics + current achieved force per gripper + goal force per gripper + material descriptor</span>
-      <span class="io-label">Output (per frame)</span>
-      <span>6D gripper displacement [Δx, Δy, Δz] × 2 hands</span>
-      <span class="io-label">Supervision (BC)</span>
-      <span>Per-frame inverse-dynamics regression: <code>action = gripper_centroid[t+1] − gripper_centroid[t]</code>, taken from recorded human demonstrations + synthetic rollouts of the same calibrated simulator</span>
-      <span class="io-label">Supervision (RL)</span>
-      <span>Reward = −‖F(t) − F*(t)‖ / force_scale; the policy collects its own closed-loop rollouts — no action labels at all</span>
-      <span class="io-label">Source of force labels</span>
-      <span>Spring forces computed inside the calibrated PhysTwin simulator (fit per-case to RGB-D video) — no physical force sensors anywhere in the pipeline</span>
+      <span>Track a target force trajectory <strong>F*(t)</strong> in a live rollout</span>
+      <span class="io-label">Output</span>
+      <span><strong>6D gripper displacement</strong> — how to move each hand this frame</span>
+      <span class="io-label">Ground-truth force labels</span>
+      <span>Spring forces from the calibrated PhysTwin simulator — <strong>no physical force sensors</strong></span>
       <span class="io-label">Metric</span>
-      <span><strong>err_ratio</strong> = mean‖F − F*‖ / mean‖F*‖ &nbsp;(0 = perfect, 1 = error as large as the goal, &gt;1 = uncontrolled)</span>
+      <span><strong>err_ratio</strong>: tracking error relative to the goal's size — <strong>0</strong> = perfect · <strong>1</strong> = error as large as the goal · <strong>&gt;1</strong> = uncontrolled</span>
     </div>
   </div>
 
-  <h3>Two evaluation modes — replay vs ramp</h3>
-  <p>
-    Every policy is evaluated in closed-loop rollouts under two kinds of goal:
-  </p>
-  <div class="table-scroll card">
-    <table>
-      <thead>
-        <tr>
-          <th>Mode</th>
-          <th>What F*(t) is</th>
-          <th>What it tests</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>Replay</strong> (in-distribution)</td>
-          <td>Recorded force from the original dataset case</td>
-          <td>Can the policy reproduce a trajectory it has seen examples of?</td>
-        </tr>
-        <tr>
-          <td><strong>Ramp</strong> (out-of-distribution)</td>
-          <td>Synthetic linear ramp: 0 → peak → 0 over 92 frames. Never seen during training.</td>
-          <td>Can the policy generalize to a completely novel force goal?</td>
-        </tr>
-      </tbody>
-    </table>
+  <h3>Two methods — one difference in input</h3>
+  <div class="setup-grid">
+    <div class="io-card open">
+      <h4>Open-loop <span class="io-badge">no feedback</span></h4>
+      <ul>
+        <li><strong>Object particle statistics</strong> that describe its current deformation</li>
+        <li><strong>Goal force</strong> per gripper</li>
+        <li><strong>Material descriptor</strong></li>
+      </ul>
+      <p class="io-note">Acts from state and goal alone — never sees the force it actually produces.</p>
+    </div>
+    <div class="io-card closed">
+      <h4>Closed-loop <span class="io-badge">force feedback</span></h4>
+      <ul>
+        <li>Everything the open-loop policy sees, plus:</li>
+        <li class="plus">＋ Current achieved force per gripper</li>
+      </ul>
+      <p class="io-note">Feedback lets it sense its own tracking error and correct it frame by frame.</p>
+    </div>
   </div>
-  <p>
-    The ramp test is harder in a specific way: to track the descending half, the gripper must
-    <em>retract</em> — reduce force by pulling away. A policy trained only on human demonstrations
-    (which never retract on purpose) has no idea how to do this.
+  <p class="io-note" style="font-size:0.88rem;color:#6b7280">
+    Particle statistics summarize hundreds of particle positions into a fixed-size vector: shape
+    change, motion, and gripper-contact distances.
   </p>
 
-  <h3>What we train on vs what we test on — three nested generalization levels</h3>
+  <h3>Evaluation — replay and ramp</h3>
+  <p>Both methods are evaluated in live rollouts under two kinds of goal:</p>
+  <div class="mode-grid">
+    <div class="mode-card">
+      <h4>Replay <span class="mode-tag">in-distribution</span></h4>
+      <p>F*(t) is a <strong>recorded</strong> force trajectory from the dataset.</p>
+      <p>Tests: can the policy reproduce forces it has seen examples of?</p>
+    </div>
+    <div class="mode-card">
+      <h4>Ramp <span class="mode-tag">out-of-distribution</span></h4>
+      <p>F*(t) is a <strong>synthetic</strong> ramp — 0 → peak → 0 — never seen in training.</p>
+      <p>Tests: can the policy track a completely novel goal?</p>
+    </div>
+  </div>
   <p>
-    "Generalization" gets used loosely; here it means three different, increasingly hard tests, and
-    we run all three. The replay/ramp distinction above is level 2 of this hierarchy:
+    The ramp is hard for one specific reason: its descending half requires the gripper to
+    <strong>retract</strong> — and human demonstrations never retract on purpose.
   </p>
+
+  <h3>Three levels of generalization</h3>
   <ol>
-    <li>
-      <strong>Frame-level ("random block").</strong> For BC validation we hold out, per case, one
-      <em>contiguous</em> time window covering 20% of the frames, starting at a random frame.
-      The window being contiguous is the point: a random <em>frame-wise</em> split would put frame
-      <em>t</em> in train and frame <em>t+1</em> in test, leaking the answer through velocity
-      features. This split only measures "did the network learn the one-step inverse map" — it says
-      nothing about deployment.
-    </li>
-    <li>
-      <strong>Trajectory-level (the real test).</strong> The deployment metric is a closed-loop
-      rollout on a goal F*(t) <em>invented at test time</em> — the synthetic ramp appears in no
-      training trajectory. New goal, new gripper motion, new particle evolution.
-    </li>
-    <li>
-      <strong>Material-level (the strongest test).</strong> Hold an entire material out of training
-      — weights and output scalers never see it — and rely on the physics descriptor to transfer.
-      Measured in Experiment 10 below.
-    </li>
+    <li><strong>Frame-level.</strong> Hold out one contiguous time window per case (a "random
+      block") for validation. Contiguity matters — interleaved frames would leak answers through
+      velocity features.</li>
+    <li><strong>Trajectory-level.</strong> Roll out on a goal invented at test time (the ramp).
+      New goal, new motion, new particle evolution.</li>
+    <li><strong>Material-level.</strong> Hold an entire material out of training and rely on the
+      material descriptor to transfer (Experiment 10).</li>
   </ol>
   <figure class="figure">
     <img src="assets/malak/figures/12_generalization_splits.png" alt="The three generalization splits, including the random-block definition">
-    <p class="caption">
-      The three nested splits. Top: "random block" = one contiguous held-out window per case with a
-      random start — never interleaved frames. Middle: the test goal is invented, not held out.
-      Bottom: leave-one-material-out.
-    </p>
+    <p class="caption">The three nested generalization splits.</p>
   </figure>
   <p>
-    A recurring lesson of this project: <strong>level-1 validation loss does not predict level-2
-    performance</strong>. Several "improvements" lowered validation loss and then destroyed
-    closed-loop control. Every claim on this page is therefore backed by level-2 (or level-3)
-    closed-loop rollouts.
+    A recurring lesson: <strong>validation loss does not predict rollout performance</strong>.
+    Several "improvements" lowered validation loss and then destroyed control. Every claim on this
+    page is backed by live rollouts.
   </p>
 
-  <h3>What the policy actually sees — the feature vector</h3>
-  <p>
-    The raw simulation state is hundreds of particle positions. We collapse this into a fixed-size
-    summary so the policy input is the same length regardless of object or case:
-  </p>
-  <ul>
-    <li><strong>Shape change</strong> — centroid displacement, bounding-box deformation (captures how much the object has deformed)</li>
-    <li><strong>Motion</strong> — velocity magnitudes, kinetic-energy-like terms</li>
-    <li><strong>Contact</strong> — per-gripper distance to nearest particles</li>
-    <li><strong>Current &amp; goal force</strong> — F<sub>now</sub> and F<sub>goal</sub>, each 2×3 (Fx, Fy, Fz per hand)</li>
-    <li><strong>Material descriptor</strong> — 2D encoding of material and operating scale (see below)</li>
-  </ul>
-
-  <h3>Look at the data first</h3>
-  <p>
-    Before any modeling, here is the actual data the labels come from. Each line below is one
-    case's recorded net contact force over time, computed from spring stretch in the calibrated
-    simulator. Two things matter for everything that follows:
-  </p>
+  <h3>The data</h3>
   <figure class="figure">
     <img src="assets/malak/figures/11_data_overview.png" alt="Recorded force traces per material and per-case stiffness vs force-scale map">
     <p class="caption">
-      Left three panels: recorded net |F|(t) per case — every training label is a point on one of
-      these curves. Right: each dot is one case, placed by its calibrated stiffness (x) and mean
-      episode force (y, log scale).
+      Left: recorded force over time, per case — every training label lives on one of these curves.
+      Right: each case placed by stiffness (x) and typical force scale (y).
     </p>
   </figure>
   <ul>
-    <li><strong>Force scales span 40× within the dataset</strong>: rope cases run 2.6–21&nbsp;kN
-      mean force, cloth 9–61&nbsp;kN, sloth 39–94&nbsp;kN. A single network regressing raw forces
-      across these regimes must learn what amounts to three different units.</li>
-    <li><strong>Stiffness alone does not separate the materials</strong> — in the scatter, rope,
-      cloth, and sloth overlap on the x-axis (log stiffness ≈ 6–9) but separate on the y-axis
-      (force scale). Keep this panel in mind: it is the geometric reason behind both the
-      material descriptor below <em>and</em> the leakage problem we later uncover in it.</li>
+    <li><strong>Force scales span ~40× across the dataset</strong> — one network must operate in
+      what amounts to three different unit systems.</li>
+    <li><strong>Stiffness alone does not separate the materials</strong> — rope, cloth, and plush
+      overlap in stiffness but separate by force scale. This drives both the material descriptor
+      below <em>and</em> the leakage problem we later uncover in it (Experiment 6).</li>
   </ul>
 
-  <h3>The 2D material descriptor — intuition</h3>
+  <h3>The material descriptor</h3>
   <p>
-    The same policy network handles rope, cloth, and sloth. Without a material hint, the network
-    must tell rope from cloth from particle statistics alone — often impossible. We add a
-    two-number fingerprint: <code>[log(spring_stiffness), log(mean_force_in_episode)]</code> —
-    i.e. the (x, y) coordinates of the case in the scatter above.
+    One policy network handles all three materials, so it needs a hint about <em>what</em> it is
+    holding. We give it a two-number fingerprint — <strong>how stiff the object is</strong> and
+    <strong>what force scale the episode operates at</strong> (both on log scales, since they vary
+    by orders of magnitude). A stiff object generates more force for the same motion, so the policy
+    should move <em>less</em> per unit of desired force change.
   </p>
-  <ul>
-    <li><code>log(spring_stiffness)</code> — how stiff the object is. A true physics property:
-      for the same gripper motion, a stiff object generates more force, so the policy should move
-      <em>less</em> per unit of desired force change. Log scale because stiffness varies by orders
-      of magnitude.</li>
-    <li><code>log(mean_force)</code> — the operating regime of the episode. Tracking a 90&nbsp;kN
-      sloth stretch and a 3&nbsp;kN rope nudge need gripper strategies that differ in scale, not
-      just direction.</li>
-  </ul>
-  <p>
-    This fingerprint is what lets a single policy work across all three materials. But note the
-    asymmetry the scatter already shows: the y-coordinate (force scale) carries most of the
-    separation between materials — and unlike stiffness, the <em>recorded episode's</em> mean force
-    is information you don't legitimately have before acting. In Experiment 6 below we show this is
-    exactly where the descriptor was quietly cheating, and how we replaced it with the
-    <em>commanded</em> goal's scale, which is deployment-legitimate.
-  </p>
-
-  <figure class="figure">
-    <img src="assets/malak/figures/00_observation_breakdown.png" alt="Policy observation breakdown">
-    <p class="caption">Breakdown of what goes into the policy observation at each timestep.</p>
-  </figure>
 </section>
 
 <!-- ===================== ARSHIA — OPEN LOOP + FORWARD ML ===================== -->
 <section id="open-loop">
-  <h2>Open-Loop Physics Sweeps &amp; Forward Model</h2>
+  <h2>Physics Sweeps &amp; Forward Model</h2>
   <p>
     <strong>Teacher forcing:</strong> replay a fixed synthetic gripper script with no feedback.
     The only variables are physics knobs — object stiffness (×0.5, ×1.0, ×2.0) and surface proxies
@@ -544,7 +536,7 @@
   </div>
 
   <p>
-    The open-loop study above characterizes the <em>forward</em> direction (deformation → force);
+    The physics study above characterizes the <em>forward</em> direction (motion → force);
     the rest of this page addresses the <em>inverse</em>: given a desired force, what gripper motion achieves it?
   </p>
 </section>
@@ -553,61 +545,52 @@
 <section id="closed-loop">
   <h2>Closed-Loop Force Control</h2>
 
-  <h3>From teacher forcing to student forcing</h3>
-  <p>
-    In machine learning, <em>teacher forcing</em> means feeding the correct ground-truth input
-    at each step during training. It produces fast convergence, but at deployment the model gets
-    its own (imperfect) outputs instead. If the model made a small error at step <em>t</em>,
-    step <em>t+1</em> sees a state that never appeared in training — and errors compound.
-    This is called <em>exposure bias</em> or <em>covariate shift</em>.
-  </p>
-  <p>
-    The open-loop setup is teacher forcing: the expert gripper trajectory is replayed exactly.
-    The closed-loop setup is student forcing: the policy drives grippers at every step.
-    One imperfect move puts the simulation into a state outside the training distribution,
-    and the policy has no training signal for recovering from it.
-    This distinction explains almost every failure mode in the experiments below.
+  <p class="lead">
+    The closed-loop policy is the one that <strong>reads the force it is currently producing</strong>.
+    Every frame: read the state, the achieved force, and the goal; output a displacement; the
+    simulator advances and the new force feeds back into the next decision.
   </p>
 
   <figure class="figure">
     <img src="assets/malak/figures/00_closed_loop_diagram.png" alt="Closed-loop force tracking: policy, action, simulator, force feedback" width="760">
     <p class="caption">
-      The loop, every frame: the policy reads the state, the <em>achieved</em> force F(t), and the
-      goal F*(t+1); it outputs a gripper displacement; the simulator advances and emits a new
-      achieved force, which feeds back into the next decision. Cut the red feedback arrow and you
-      have open-loop replay.
+      The closed loop. Cut the red feedback arrow — the achieved force — and you have the open-loop
+      policy.
     </p>
   </figure>
 
-  <h3>Running example — <code>double_lift_cloth_1</code></h3>
+  <figure class="figure">
+    <img src="assets/malak/figures/00_observation_breakdown.png" alt="Policy observation breakdown">
+    <p class="caption">
+      What the closed-loop policy observes each timestep. The <strong>achieved force</strong> input
+      is the closed-loop addition — the open-loop policy sees everything else but not this.
+    </p>
+  </figure>
+
+  <h3>Why feedback matters — teacher forcing vs student forcing</h3>
   <p>
-    The diagram is just boxes; here is the same loop as a concrete story, one rollout step by step.
+    Training data shows the policy only <em>correct</em> states (teacher forcing). At deployment the
+    policy drives the simulation itself (student forcing): one imperfect move puts it in a state it
+    never trained on, and errors compound. <strong>This distinction explains almost every failure
+    mode below</strong> — and force feedback is the policy's only way to notice its own drift.
   </p>
 
+  <h3>Running example — <code>double_lift_cloth_1</code></h3>
   <ol class="flow">
     <li>
       <span class="tag-step">t = 0</span>
-      Cloth hangs between two grippers, roughly at rest. Contact force ≈ 0.
-      The policy receives 45 numbers: particle centroid offset (near zero), bounding-box size (resting dimensions),
-      velocity magnitudes (near zero), per-gripper distances to cloth, current force = [0,0,0,0,0,0],
-      goal force = first frame of the recorded force trajectory, and the cloth material descriptor.
+      Cloth hangs between two grippers at rest, contact force ≈ 0. The policy reads the particle
+      statistics, zero achieved force, the first goal force, and the cloth material descriptor.
     </li>
     <li>
-      <span class="tag-step">t = 1</span>
-      Policy outputs [Δx₁,Δy₁,Δz₁, Δx₂,Δy₂,Δz₂] — a small upward nudge to each gripper.
-      The simulator advances: particles move, springs stretch, new forces are computed.
-      Achieved force is now a small upward pull.
-    </li>
-    <li>
-      <span class="tag-step">t = 2…T</span>
-      The loop repeats. At each step the policy observes the current state and current force,
-      compares to the goal, and decides how to adjust. The gripper trajectory is entirely the
-      policy's own — not from any demonstration.
+      <span class="tag-step">t = 1…T</span>
+      Each frame it outputs a 6D nudge; springs stretch; a new force comes back. It compares achieved
+      to goal and adjusts. The gripper trajectory is entirely the policy's own — not from any demonstration.
     </li>
     <li>
       <span class="tag-step">eval</span>
-      At the end, we compute err_ratio = mean‖F − F*‖ / mean‖F*‖ over the full rollout.
-      For this case (BC best), err_ratio = <strong>0.22</strong>.
+      err_ratio over the full rollout = <strong>0.22</strong> for this case (BC best) — the average
+      tracking error is 22% of the goal's magnitude.
     </li>
   </ol>
 
@@ -638,13 +621,10 @@
     <p class="caption">The release problem: BC stalls at peak force when the ramp starts descending because it was never trained on states where retraction is needed.</p>
   </figure>
 
-  <h3>The same loop on a hard goal — one rope-ramp rollout, phase by phase</h3>
+  <h3>The hard case — a ramp goal, phase by phase</h3>
   <p>
-    The cloth walkthrough above is the easy case (a goal from the training distribution). Here is
-    the same loop on the hard case — the synthetic rope ramp from the headline video
-    (Experiment 2 below). We reset the twin to frame 0 of a rope case and command an invented goal:
-    pull with a force ramping 0 → ~17&nbsp;kN → 0 over 92 frames. Read each row as
-    "what the policy sees → what it must do":
+    Same loop, but the goal is an invented ramp: pull with a force that rises to a peak and returns
+    to zero. Read each row as "what the policy sees → what it must do":
   </p>
   <div class="table-scroll card malak">
     <table>
@@ -680,29 +660,10 @@
     </table>
   </div>
   <p>
-    The falling edge is the whole point: <code>(high now, low next)</code> is the one input region
-    that <em>never appears</em> in teacher-forced training data, so BC has no behavior for it.
-    err_ratio is simply the average arrow-gap over the whole trace.
+    The falling edge is the whole point: <strong>"force is high now, goal is low next"</strong> is
+    the one situation that never appears in demonstration data, so an imitation policy has no
+    behavior for it.
   </p>
-
-  <div class="card malak">
-    <h3 style="margin-top:0">Policy I/O summary</h3>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr><th>Field</th><th>What it is</th><th>Size</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>state</td><td>Particle summary features (centroid, bbox, velocity, contact)</td><td>31</td></tr>
-          <tr><td>force_now</td><td>Current per-group contact force</td><td>2 × 3 = 6</td></tr>
-          <tr><td>force_goal</td><td>Target force for next frame (recorded or synthetic ramp)</td><td>2 × 3 = 6</td></tr>
-          <tr><td>material</td><td>2D descriptor [log stiffness, log mean force]</td><td>2</td></tr>
-          <tr><td><strong>→ action</strong></td><td>Per-group gripper centroid displacement</td><td>2 × 3 = 6</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="caption" style="margin-top:0.5rem">Total input: 45 dims (base BC). Expanded to 48–49 with learned encoder variants.</p>
-  </div>
 </section>
 
 <!-- ===================== OPEN VS CLOSED ===================== -->
@@ -710,32 +671,22 @@
   <h2>Open Loop vs Closed Loop — When Does Feedback Matter?</h2>
 
   <p>
-    This is the teacher-forcing / student-forcing story made quantitative. BC is trained
-    <em>teacher-forced</em> (fed recorded states); at deployment it runs <em>student-forced</em>
-    (fed the states its own actions produce). The <code>force_now</code> feedback channel is the
-    policy's only way to notice its own drift. So: how much is that channel actually worth?
-  </p>
-  <p>
-    To isolate it, we run a controlled ablation: retrain the <em>same</em> policy — same dataset,
-    same split, same architecture, same epochs — with the <code>force_now</code> input zeroed out
-    in both training and evaluation. If feedback is essential, performance should collapse.
-    The answer is more nuanced, and it splits exactly along the forcing boundary:
+    Our two methods differ by a <strong>single input</strong>: the achieved force. To compare them
+    fairly, both are trained on the same dataset, split, architecture, and epochs — only the feedback
+    input changes. <strong>How much is feedback actually worth?</strong> The answer splits cleanly by
+    evaluation mode:
   </p>
   <ul>
-    <li><strong>Replay (in-distribution):</strong> removing feedback barely changes performance
-      (frame-level validation loss: 0.317 with feedback vs 0.361 without). When the goal is
-      something training naturally produces, the goal command alone determines the right action —
-      the policy doesn't need to read back its realized force.</li>
-    <li><strong>Ramp (out-of-distribution):</strong> removing feedback costs +1.48 err_ratio on
-      cloth ramp and +0.65 on sloth. Under a novel goal the state drifts off-distribution
-      (student forcing), and only the closed-loop policy can <em>sense</em> that drift through
-      F(t) and correct. At the ramp's end, the open-loop policy — blind to the force it is holding —
-      finishes at 2–3× the residual force of the closed-loop one.</li>
+    <li><strong>Replay:</strong> removing feedback barely changes performance. When the goal looks
+      like training data, the goal alone determines the right action.</li>
+    <li><strong>Ramp:</strong> removing feedback costs +1.48 err_ratio on cloth and +0.65 on sloth.
+      Under a novel goal the state drifts away from anything in training, and only the closed-loop
+      policy can <em>sense</em> that drift and correct it. The open-loop policy — blind to the force
+      it is holding — finishes at 2–3× the residual force.</li>
   </ul>
   <p>
-    In other words: feedback's value is concentrated at the edge of the training distribution —
-    which is also precisely where RL's value showed up. Feedback and on-policy training attack the
-    same failure (student-forcing drift) from two different sides.
+    <strong>Feedback's value is concentrated at the edge of the training distribution</strong> —
+    exactly where RL's value also shows up. Both attack the same failure from different sides.
   </p>
 
   <div class="figure-grid">
@@ -806,18 +757,17 @@
   <h2>Experiments &amp; Improvements</h2>
 
   <p>
-    The closed-loop work proceeded in stages. Each experiment addressed a specific failure mode
-    identified in the previous one. The pipeline below is shared by all of them — what changes
-    between experiments is the policy architecture, the conditioning, and the training signal.
+    The policy work proceeded in stages — each experiment fixes a failure mode found in the previous
+    one. The pipeline below is shared by all; what changes is the architecture, the conditioning,
+    and the training signal.
   </p>
 
   <figure class="figure">
     <img src="assets/malak/figures/00_pipeline_diagram.png" alt="Pipeline: real rollouts + synthetic trajectories to policy dataset to BC to PPO to closed-loop evaluation">
     <p class="caption">
-      The shared pipeline: 14 real PhysTwin rollouts are augmented with 262 synthetic trajectories
-      (scripted motions on the same calibrated simulators) into a 33K-row (state, action, force)
-      dataset; policies are trained supervised (BC), optionally fine-tuned with PPO, and always
-      judged by closed-loop rollout — never by validation loss.
+      The shared pipeline: real PhysTwin rollouts plus synthetic trajectories form the training set;
+      policies are trained by imitation (BC), optionally fine-tuned with RL, and always judged by
+      live rollout — never by validation loss.
     </p>
   </figure>
 
@@ -826,11 +776,10 @@
     <h4>1 — Behavior Cloning Baseline</h4>
     <span class="metric">cloth replay 0.36 · rope replay 0.75 · cloth ramp 6.55 · sloth ramp 5.06</span>
     <p>
-      A 43-dim → 6-dim MLP trained by imitation on 14 real PhysTwin cases plus 218 synthetic
-      trajectories generated by replaying the simulator under random motion families (~33K rows total).
-      Replay performance is decent — the policy learned to imitate the human trajectory well enough
-      to reproduce familiar forces. Ramp performance is catastrophic: the policy never encountered
-      states where it needed to retract, so it simply doesn't.
+      <strong>The idea:</strong> imitate the gripper motion in recorded demonstrations and synthetic
+      rollouts. Replay performance is decent — the policy reproduces forces it has seen examples of.
+      Ramp performance is catastrophic: the policy never saw states where it needed to retract, so it
+      simply doesn't.
     </p>
     <div class="video-pair">
       <figure>
@@ -853,11 +802,10 @@
     <h4>2 — Reinforcement Learning (PPO warm-started from BC)</h4>
     <span class="metric">rope replay 0.41 · rope ramp 0.52 · release fraction 0.87</span>
     <p>
-      We wrapped PhysTwin's simulator as a custom OpenAI Gym environment (no Stable-Baselines3 dependency)
-      and fine-tuned the BC policy with PPO. RL collects its own closed-loop rollouts,
-      so by definition it trains on the student-forcing distribution. The release problem disappears:
-      release fraction 0.04 → 0.87. The rope ramp video below shows qualitatively different behavior
-      — the gripper now retracts when the goal drops.
+      <strong>The idea:</strong> instead of imitating, reward the policy each frame for how closely
+      its achieved force matches the goal, and let it learn from its own rollouts. Because RL trains
+      on the states the policy itself produces, the release problem disappears — release fraction
+      jumps from 0.04 to <strong>0.87</strong>. The gripper now retracts when the goal drops.
     </p>
     <div class="video-pair">
       <figure>
@@ -912,39 +860,24 @@
     <h4>4 — Transformer Backbone + Scheduled Sampling</h4>
     <span class="metric">cloth replay 0.305 · rope replay 0.391 — both better than RL</span>
     <p>
-      We rebuilt the policy as a 12-token transformer: 8 past frames of history and 4 future commanded-goal
-      frames, with FiLM material conditioning (see next). The diagram below shows exactly what the
-      network reads each frame — note that the goal preview comes from the <em>commanded</em>
-      trajectory (always known at deployment), and material physics enters by modulating activations
-      (FiLM), not as a token the attention can latch onto.
+      <strong>The idea:</strong> give the policy memory — a transformer that sees several past frames
+      and a short preview of the commanded goal. Alone, this won replay but <em>catastrophically</em>
+      regressed on ramps (sloth ramp: 29.5): a more expressive imitation model amplifies its own
+      compounding errors.
     </p>
     <figure class="figure">
       <img src="assets/malak/figures/13_transformer_arch.png" alt="Transformer policy token layout with FiLM conditioning and noise injection">
       <p class="caption">
-        The transformer policy's per-frame view: 8 past-frame tokens (state, achieved force, own
-        previous action), 4 commanded-goal preview tokens, FiLM conditioning from the material
-        physics vector, 6-D gripper action out. The red annotation marks the single change that
-        fixes exposure bias.
+        The transformer policy: past-frame tokens, commanded-goal preview tokens, material
+        conditioning, gripper action out. The red annotation marks the single change that fixes
+        exposure bias.
       </p>
     </figure>
     <p>
-      Without any noise, this model achieved the
-      best honest in-distribution replay ever (rope 0.421) — but <em>catastrophically</em> regressed
-      on OOD ramps (sloth ramp: 29.5). A more expressive teacher-forced model is <em>more brittle</em>
-      out-of-distribution: it now conditions on its own past actions, so the compounding-error loop
-      is amplified.
-    </p>
-    <p>
-      The fix is conceptually clean: inject Gaussian noise (σ=0.3) into the previous-action input
-      during training. This is a form of <em>scheduled sampling</em> (also called DART) —
-      simulating the student-forcing distribution during supervised training, so the model learns
-      to recover from small errors. Result: sloth ramp collapses from 29.5 → 2.25.
-      Cloth replay 0.305, rope replay 0.391 — both beating the RL policy.
-    </p>
-    <p>
-      This is the clearest result of the project: <strong>the right fix for student-forcing is to
-      train under it, not to add RL</strong>. Architecture and training distribution matter more
-      than the optimization algorithm.
+      <strong>The fix:</strong> inject noise into the previous-action input during training, so the
+      model learns to recover from its own small errors. Sloth ramp collapses 29.5 → 2.25, and replay
+      beats the RL policy. The clearest lesson of the project: <strong>the right fix for compounding
+      errors is to train under them — not to add RL</strong>.
     </p>
     <figure class="figure">
       <img src="assets/malak/figures/03_force_tracking_grid.png" alt="Force tracking grid across materials and modes">
@@ -957,20 +890,13 @@
     <h4>5 — FiLM Conditioning + Enriched Physics Descriptor</h4>
     <span class="metric">sloth ramp 1.38 — all-time project best &nbsp;|&nbsp; beats/ties RL on 5 of 6 groups</span>
     <p>
-      FiLM (Feature-wise Linear Modulation) applies the material descriptor not by concatenating it
-      to the input, but by using it to scale and shift the network's activations multiplicatively
-      at each layer. This is designed to avoid cross-material interference: cloth and rope share
-      weights, but the FiLM conditioning pushes each material into a different region of activation
-      space rather than making the material just one more input to memorize.
-    </p>
-    <p>
-      We swept descriptor dimension from 0 to 11, and tried two injection strategies:
-      (a) FiLM, and (b) adapter token — a per-case embedding injected into the attention sequence.
-      The adapter token is <strong>harmful</strong>: it gives the network a case-identity anchor
-      and the model memorizes it instead of generalizing (sloth ramp blows up to 8.35).
-      Enriched 11D FiLM (splitting object/control spring stiffness and adding calibrated
-      friction/elasticity) improves every OOD ramp: sloth ramp reaches <strong>1.38</strong>,
-      the all-time best in the project.
+      <strong>The idea:</strong> instead of feeding the material descriptor in as just another input,
+      FiLM uses it to modulate the network's activations at every layer — pushing each material into
+      its own region of the network rather than letting it be memorized. An enriched physics
+      descriptor (separate stiffnesses, friction, elasticity) improves <em>every</em> OOD ramp:
+      sloth ramp reaches <strong>1.38</strong>, the project's all-time best. The alternative —
+      a per-case embedding token — was <strong>harmful</strong>: the model memorizes case identity
+      instead of generalizing.
     </p>
     <figure class="figure">
       <img src="assets/malak/figures/05_highlight_cloth.png" alt="Highlight cloth results">
@@ -997,16 +923,10 @@
     <h4>6 — Leakage Audit: the Material Descriptor Was Partly Cheating</h4>
     <span class="metric">honest negative result — rope replay collapses 0.46 → 0.84 without force scale</span>
     <p>
-      After the 2D descriptor showed strong replay improvements, we asked: <em>why?</em>
-      The second component is <code>log(mean_force_in_episode)</code> — the average force magnitude
-      across the episode. On <em>replay</em> tests, this value comes from the recorded data,
-      which is essentially the same as the target trajectory. So the policy was getting a hint
-      about the goal's force scale — a form of look-ahead bias.
-    </p>
-    <p>
-      To test this, we replaced the descriptor with a learned encoder that maps only the stiffness
-      distribution (no force scale). Performance collapsed: rope replay 0.46 → 0.84.
-      Feeding the force scale back to the same encoder recovered the 2D-descriptor results almost exactly.
+      The descriptor's force-scale component comes from the <em>recorded episode</em> — which, on
+      replay tests, is essentially the target trajectory itself. The policy was getting a hint about
+      the answer. Removing the force scale collapsed rope replay 0.46 → 0.84; adding it back
+      recovered the results exactly.
     </p>
     <div class="callout">
       <strong>What we thought we learned:</strong> material conditioning helps the policy understand
@@ -1031,20 +951,11 @@
     <h4>7 — RL on Top of the Transformer Adds Nothing (measured negative result)</h4>
     <span class="metric">PPO fine-tuning of the noise-injected transformer: identical to warm-start on all 6 groups</span>
     <p>
-      After the transformer+noise policy matched RL on replay and surpassed it on some ramps,
-      we ran RL fine-tuning on the noise-injected transformer BC (50K PPO steps, same recipe that worked earlier).
-      Every checkpoint was identical to the BC warm-start on all 6 evaluation groups.
-    </p>
-    <p>
-      Why? The scheduled-sampling noise already gives BC training exposure to the closed-loop
-      distribution. RL's contribution in earlier experiments was to solve the covariate shift
-      problem by training on self-generated rollouts. Once BC has been given that coverage
-      through scheduled sampling, there is nothing left for RL to fix.
-    </p>
-    <p>
-      This reframes RL's contribution: it was a <strong>diagnosis tool and an early fix</strong>,
-      not a necessary component. RL's lasting contribution is identifying that distribution shift
-      was the problem. The cleaner solution turned out to be simulating it in supervised training.
+      RL fine-tuning of the noise-injected transformer (same recipe that worked earlier) produced
+      checkpoints <em>identical</em> to the warm-start on all 6 evaluation groups. The noise injection
+      already gives imitation training the coverage RL used to provide — there is nothing left for RL
+      to fix. RL's lasting contribution was <strong>diagnosing</strong> that distribution shift was
+      the problem; the cleaner fix was simulating that shift in supervised training.
     </p>
   </div>
 
@@ -1092,7 +1003,7 @@
       </tbody>
     </table>
     <p class="caption" style="text-align:left;margin-top:0.75rem">
-      err_ratio = mean‖F − F*‖ / mean‖F*‖ (all numbers from the final 14-case eval sweeps).
+      All numbers from the final 14-case eval sweeps.
       Bold = best per column. No single policy is best everywhere — the transformer owns replay,
       FiLM owns rope/sloth ramps, RL keeps cloth ramp. That complementarity is what the goal-aware
       ensemble (Experiment 8, next section) exploits. Cloth ramp remains the hardest case for all policies.
@@ -1131,13 +1042,10 @@
   <h2>Pushing Further — Ensemble, Diagnosis &amp; Generalization</h2>
 
   <p>
-    The experiment sequence above produced two complementary specialists: the noise-injected
-    transformer (best in-distribution tracking) and the 11D-FiLM physics policy (best on
-    out-of-distribution ramps). No single policy is best everywhere. The experiments below ask
-    three follow-up questions: <strong>(1)</strong> can we get the best of both without retraining?
-    <strong>(2)</strong> where exactly is the remaining error concentrated? and
-    <strong>(3)</strong> does the material descriptor truly generalize to a material the policy has
-    never seen?
+    The experiments above produced two complementary specialists — the transformer (best on replay)
+    and the FiLM physics policy (best on ramps). Three follow-up questions:
+    <strong>can we combine them?</strong> · <strong>where does the remaining error live?</strong> ·
+    <strong>does the policy generalize to an unseen material?</strong>
   </p>
 
   <!-- ---- 8. Ensemble ---- -->
@@ -1145,23 +1053,13 @@
     <h4>8 — Goal-Aware Policy Ensemble (no training, no extra simulator calls)</h4>
     <span class="metric">14-case mean err_ratio 0.66 — beats every single policy (best single 0.71), within 0.03 of the per-case oracle</span>
     <p>
-      At deployment we always know our own <em>commanded</em> force goal F*(t). That is enough to
-      route each rollout to the right specialist <em>before</em> running it. We compute one cheap
-      feature from the goal alone — does the commanded force return to ~0 after its peak? — which
-      cleanly separates a release/ramp maneuver from a hold/replay goal (14/14 cases routed
-      correctly). The router then picks:
-    </p>
-    <ul>
-      <li><strong>Replay-shaped goal</strong> → noise-injected transformer (best in-distribution).</li>
-      <li><strong>Ramp-shaped goal</strong> → 11D-FiLM physics policy (best OOD) — <em>except</em>
-      cloth ramps, where FiLM regresses and we keep the RL policy. This material-aware exception is
-      itself a finding: cloth ramp is the one place a single specialist is not enough.</li>
-    </ul>
-    <p>
-      The material is read from the descriptor, so the entire router is deployment-legitimate — no
-      look-ahead, no oracle labels, no new training. The deployable ensemble matches or beats the
-      best single policy on <strong>all six</strong> material×mode groups and lands within 0.03 of
-      a per-case oracle that is allowed to peek at every policy's result.
+      <strong>The idea:</strong> we always know our own commanded goal, so route each rollout to the
+      right specialist <em>before</em> running it. One cheap question — does the goal return to zero
+      after its peak? — cleanly separates ramp-shaped goals (→ FiLM policy) from replay-shaped goals
+      (→ transformer), 14/14 cases routed correctly — with one material-aware exception (cloth ramps
+      route to the RL policy, where FiLM regresses). No look-ahead, no oracle labels, no new training.
+      The ensemble matches or beats the best single policy on <strong>all six</strong> groups, within
+      0.03 of an oracle allowed to peek at every policy's result.
     </p>
     <figure class="figure">
       <img src="assets/malak/figures/07_ensemble_bars.png" alt="Goal-aware ensemble vs single policies and oracle">
@@ -1234,15 +1132,9 @@
     <h4>10 — Generalization to a Held-Out Material (leave-sloth-out)</h4>
     <span class="metric">partial transfer: gentle sloth lift stays controlled (0.47), aggressive stretch degrades 2–4×</span>
     <p>
-      Every result so far trained on all three materials. The real test of the FiLM physics
-      descriptor is whether it lets the policy control a material it has <em>never seen</em>. We
-      retrain the exact 11D-FiLM recipe on <strong>rope and cloth only</strong> — sloth is held out of
-      the weights entirely — and evaluate on the sloth cases. For the unseen material's output
-      normalization we use a <strong>pooled rope+cloth action scaler</strong> (derivable with zero
-      sloth data, so the whole pipeline stays deployment-legitimate).
-    </p>
-    <p>
-      The result is an honest <strong>partial transfer</strong>:
+      <strong>The strongest test:</strong> train on rope and cloth only — the plush sloth held out of
+      training entirely — then evaluate on the sloth cases, relying on the material descriptor to
+      transfer. The result is an honest <strong>partial transfer</strong>:
     </p>
     <div class="table-scroll card malak">
       <table>
@@ -1283,14 +1175,11 @@
       </figure>
     </div>
     <div class="callout">
-      <strong>What this tells us:</strong> the stiffness descriptor carries <em>real</em> material
-      physics — a policy that never saw sloth still controls a gentle sloth lift (0.47) by reading its
-      stiffness and interpolating from rope/cloth behavior. But conditioning is <em>not</em> a
-      substitute for training on the material: the most demanding case, the aggressive
-      double-stretch (the largest deformation, furthest from anything rope or cloth produce), is
-      exactly where extrapolation breaks down (0.83 → 3.05). Part of that gap is also the pooled
-      action scaler, which slightly overshoots the true sloth motion scale — a reminder that
-      generalizing to a new material needs both a conditioning signal and a sensible output scale.
+      <strong>What this tells us:</strong> the material descriptor carries <em>real</em> physics — a
+      policy that never saw a sloth still controls a gentle sloth lift (0.47) by reading its stiffness
+      and interpolating. But conditioning is not a substitute for training data: the most aggressive
+      maneuver, furthest from anything rope or cloth produce, is exactly where extrapolation breaks
+      down.
     </div>
   </div>
 
