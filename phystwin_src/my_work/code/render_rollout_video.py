@@ -61,7 +61,8 @@ def fig_to_bgr(fig):
 
 def render_video(rollout_path: Path, out_path: Path, fps: int = 15,
                   stride: int = 1, width: int = 1600, height: int = 720,
-                  particle_size: float = 4.0, arrow_scale_m: float = 0.15):
+                  particle_size: float = 4.0, arrow_scale_m: float = 0.15,
+                  particle_only: bool = False):
     d = np.load(rollout_path, allow_pickle=True)
     positions = d["positions"].astype(np.float32)       # [T, N, 3]
     ctrl_pos = d["controller_pos"].astype(np.float32)   # [T, K, 3]
@@ -111,8 +112,12 @@ def render_video(rollout_path: Path, out_path: Path, fps: int = 15,
     # Manually position the two panels with a clear horizontal gap so the
     # 3D axis tick labels / z-axis don't bleed into the right (2D) panel.
     # Coordinates are (left, bottom, width, height) in figure fractions.
-    ax3d = fig.add_axes([0.02, 0.08, 0.45, 0.82], projection="3d")
-    ax2d = fig.add_axes([0.58, 0.10, 0.39, 0.78])
+    if particle_only:
+        ax3d = fig.add_axes([0.04, 0.04, 0.92, 0.88], projection="3d")
+        ax2d = None
+    else:
+        ax3d = fig.add_axes([0.02, 0.08, 0.45, 0.82], projection="3d")
+        ax2d = fig.add_axes([0.58, 0.10, 0.39, 0.78])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -122,7 +127,8 @@ def render_video(rollout_path: Path, out_path: Path, fps: int = 15,
 
     for i, t in enumerate(frames):
         ax3d.clear()
-        ax2d.clear()
+        if ax2d is not None:
+            ax2d.clear()
 
         # --- 3D panel ---
         ax3d.scatter(positions[t, :, 0], positions[t, :, 1], positions[t, :, 2],
@@ -193,30 +199,32 @@ def render_video(rollout_path: Path, out_path: Path, fps: int = 15,
                      framealpha=0.85)
 
         # --- 2D panel (force tracking) ---
-        ax2d.plot(t_arr, F_g_kN, "k--", linewidth=1.5, label="goal", alpha=0.8)
-        ax2d.plot(t_arr, F_a_kN, color=col_a, linewidth=2.0, label="achieved")
-        ax2d.axvline(t, color="red", linewidth=1.5, alpha=0.7, label="now")
-        # marker at current time
-        ax2d.scatter([t], [F_a_kN[t]], color=col_a, s=50, zorder=5)
-        ax2d.scatter([t], [F_g_kN[t]], facecolors="none",
-                      edgecolors="black", s=50, zorder=5)
-        ax2d.set_xlabel("frame")
-        ax2d.set_ylabel("‖F‖  (kN)")
-        ax2d.set_xlim(0, T - 1)
-        ax2d.set_ylim(y_min, y_max)
-        ax2d.set_title(
-            f"force tracking  ·  achieved = {F_a_kN[t]:.1f} kN  |  goal = {F_g_kN[t]:.1f} kN",
-            fontsize=10,
-        )
-        ax2d.grid(True, alpha=0.3)
-        ax2d.legend(loc="upper left", fontsize=8)
+        if ax2d is not None:
+            ax2d.plot(t_arr, F_g_kN, "k--", linewidth=1.5, label="goal", alpha=0.8)
+            ax2d.plot(t_arr, F_a_kN, color=col_a, linewidth=2.0, label="achieved")
+            ax2d.axvline(t, color="red", linewidth=1.5, alpha=0.7, label="now")
+            # marker at current time
+            ax2d.scatter([t], [F_a_kN[t]], color=col_a, s=50, zorder=5)
+            ax2d.scatter([t], [F_g_kN[t]], facecolors="none",
+                          edgecolors="black", s=50, zorder=5)
+            ax2d.set_xlabel("frame")
+            ax2d.set_ylabel("‖F‖  (kN)")
+            ax2d.set_xlim(0, T - 1)
+            ax2d.set_ylim(y_min, y_max)
+            ax2d.set_title(
+                f"force tracking  ·  achieved = {F_a_kN[t]:.1f} kN  |  goal = {F_g_kN[t]:.1f} kN",
+                fontsize=10,
+            )
+            ax2d.grid(True, alpha=0.3)
+            ax2d.legend(loc="upper left", fontsize=8)
 
-        fig.suptitle(
-            f"PhysTwin closed-loop force tracking  ·  achieved vs goal\n"
-            f"colored arrow = achieved force (per controller group),  "
-            f"dashed black arrow = goal force",
-            fontsize=10, y=0.98,
-        )
+        if not particle_only:
+            fig.suptitle(
+                f"PhysTwin force tracking  ·  achieved vs goal\n"
+                f"colored arrow = achieved force (per controller group),  "
+                f"dashed black arrow = goal force",
+                fontsize=10, y=0.98,
+            )
         # Don't call tight_layout — we use explicit add_axes positions.
 
         bgr = fig_to_bgr(fig)
@@ -245,6 +253,8 @@ def main():
                     help="Render every Nth frame (1=all)")
     ap.add_argument("--width", type=int, default=1600)
     ap.add_argument("--height", type=int, default=720)
+    ap.add_argument("--particle_only", action="store_true",
+                    help="Render only the 3D particle + force-arrow panel (no 2D force plot)")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -253,7 +263,8 @@ def main():
         format="%(asctime)s %(levelname)s %(message)s",
     )
     render_video(args.rollout, args.out, fps=args.fps, stride=args.stride,
-                  width=args.width, height=args.height)
+                  width=args.width, height=args.height,
+                  particle_only=args.particle_only)
 
 
 if __name__ == "__main__":

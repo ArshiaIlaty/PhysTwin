@@ -107,6 +107,16 @@
       font-weight: 600;
       margin-right: 0.3rem;
     }
+    .hero-figure {
+      margin: 2rem auto 0;
+      max-width: 660px;
+    }
+    .hero-figure video {
+      width: 100%;
+      border-radius: 10px;
+      display: block;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+    }
     @media (max-width: 640px) {
       .video-pair, .video-trio { grid-template-columns: 1fr; }
     }
@@ -119,7 +129,7 @@
     <a class="brand" href="#">PhysTwin Force</a>
     <a href="#overview">Overview</a>
     <a href="#setup">Problem Setup</a>
-    <a href="#open-loop">Arshia</a>
+    <a href="#open-loop">Open Loop</a>
     <a href="#closed-loop">Closed Loop</a>
     <a href="#comparison">Open vs Closed</a>
     <a href="#experiments">Experiments</a>
@@ -130,12 +140,12 @@
 
 <!-- ===================== HERO ===================== -->
 <header class="hero">
-  <h1>Force-Aware Closed-Loop Control<br>inside a Physics Digital Twin</h1>
+  <h1>Inverse Force Control<br>on Deformable Objects</h1>
   <p class="subtitle">
-    <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>
-    reconstructs deformable objects from video as a calibrated spring-mass simulator.
-    We extend it into a force-aware control testbed: a learned policy that actively drives virtual grippers
-    to track a target force profile, closed-loop, frame by frame.
+    Given a target contact-force trajectory on a deformable object — a rope, a sheet of cloth, a
+    plush toy — we learn the gripper motion that reproduces it. Object stiffness varies by orders of
+    magnitude, so we study both directions of the problem: predicting force from motion (open-loop)
+    and commanding force through feedback (closed-loop).
   </p>
   <p class="authors">
     <span>Arshia Ilaty</span> ·
@@ -146,7 +156,16 @@
     <a class="btn btn-primary" href="https://github.com/ArshiaIlaty/PhysTwin" target="_blank" rel="noopener">GitHub</a>
     <a class="btn" href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin Paper</a>
   </div>
-  <img class="teaser-img" src="assets/phystwin/teaser.png" alt="PhysTwin reconstructs deformable objects from video" width="800">
+  <figure class="hero-figure">
+    <video autoplay muted loop playsinline width="640">
+      <source src="assets/malak/videos/HERO_cloth_lift_particles.mp4" type="video/mp4">
+    </video>
+    <p class="caption">
+      Our best force-tracking rollout (cloth lift, tracking error 0.16). Particles are the simulated
+      object; the solid arrow is the force the gripper actually produces, the dashed arrow is the
+      commanded target.
+    </p>
+  </figure>
 </header>
 
 <!-- ===================== OVERVIEW ===================== -->
@@ -154,75 +173,43 @@
   <h2>Overview</h2>
 
   <p class="lead">
-    <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>
-    takes RGB-D video of a human manipulating a deformable object — a rope, a piece of cloth, a plush toy —
-    and fits a spring-mass physics simulation to it. The result is a <em>digital twin</em>: a calibrated
-    virtual replica that you can re-simulate under new conditions without filming anything new.
+    Our goal is contact-force control on <strong>deformable objects</strong>. Given a target force
+    trajectory F*(t), can a policy move the gripper — frame by frame — so the realized force matches
+    the target, across objects as different as a slack rope, a sheet of cloth, and a dense plush toy?
+    Stiffness varies by orders of magnitude across these objects, so the same target force demands a
+    very different gripper motion for each: handling that variation is central to both the problem
+    and our contribution.
   </p>
-
   <p>
-    The original PhysTwin work focuses on reconstruction and passive replay.
-    <strong>We ask a different question:</strong> can we use the simulator to <em>control</em> force?
-    Specifically — given a target force trajectory, can a learned policy move the virtual grippers,
-    frame by frame, to achieve that target in the live simulation?
+    We run inside <a href="https://jianghanxiao.github.io/phystwin-web/" target="_blank" rel="noopener">PhysTwin</a>,
+    which reconstructs each object from RGB-D video as a calibrated spring-mass <em>digital twin</em>.
+    The twin gives us exact internal contact forces with no physical sensor and no hardware — the
+    substrate that makes controlled force-tracking experiments possible.
   </p>
 
   <h3>Where the ground truth comes from</h3>
   <p>
-    We have no physical robot and no force sensors, so it is worth being precise about what
-    "force" means everywhere on this page. The provenance chain is:
-  </p>
-  <ol class="flow">
-    <li><strong>RGB-D video</strong> of a human manipulating the object (PhysTwin's input data).</li>
-    <li><strong>Per-case differentiable optimization</strong> (PhysTwin, prior work): spring stiffnesses,
-        damping, and collision parameters are fit so the simulator reproduces the tracked motion in the video.</li>
-    <li><strong>Calibrated simulator</strong>: once fit, the spring-mass model computes the contact force at the
-        grippers from spring stretch — exactly, at every frame, for free.</li>
-    <li><strong>Our labels</strong>: every force value in this project — training targets, the achieved force
-        F(t) fed back to the policy, and the error metric — is this simulator spring force.
-        "Ground truth" = the calibrated twin's internal physics, not a sensor measurement.</li>
-  </ol>
-  <p>
-    This is both the limitation (we inherit PhysTwin's calibration accuracy) and the opportunity:
-    inside the twin the force signal is exact, dense, and free, which makes rigorous closed-loop
-    control experiments possible at zero hardware cost.
+    There is no robot and no force sensor anywhere in this work, so it is worth stating what "force"
+    means precisely. PhysTwin fits a spring-mass model to the RGB-D video (per case), and the fitted
+    model reports the contact force at the gripper from spring stretch — exactly, every frame.
+    <strong>Ground truth here = the calibrated twin's internal spring measurements, not sensor
+    values.</strong> While this ties our accuracy to PhysTwin's calibration, it also gives an exact,
+    dense force signal at zero hardware cost, which is what makes rigorous force-tracking experiments
+    possible.
   </p>
 
-  <h3>Forward vs inverse — what "inversion" means here</h3>
-  <div class="table-scroll card">
-    <table>
-      <thead>
-        <tr><th></th><th>Forward problem (Arshia)</th><th>Inverse problem (Malak)</th></tr>
-      </thead>
-      <tbody>
-        <tr><td><strong>Question</strong></td>
-            <td>Given a motion, what force results?</td>
-            <td>Given a <em>desired</em> force, what motion produces it?</td></tr>
-        <tr><td><strong>Input</strong></td>
-            <td>gripper trajectory + deformation features</td>
-            <td>target force trajectory F*(t) + current state</td></tr>
-        <tr><td><strong>Output</strong></td>
-            <td>predicted contact force</td>
-            <td>gripper motion, executed step by step</td></tr>
-        <tr><td><strong>Type</strong></td>
-            <td>regression (open-loop prediction)</td>
-            <td>inverse dynamics + feedback control (closed-loop)</td></tr>
-      </tbody>
-    </table>
-  </div>
+  <h3>The inverse problem</h3>
   <p>
-    So "inversion" is not "estimating force" — it is the control-theoretic inverse of the
-    force-generation map: we invert <em>motion → force</em> into <em>desired force → motion</em>.
-    Estimating force from deformation (the forward map) is the prior work and Arshia's track;
-    commanding it is ours.
+    Stated plainly: <strong>given a desired force, what gripper motion produces it on objects of
+    different stiffness and material?</strong> This inverse (force → motion) direction is our focus.
+    The forward direction (motion → force) is characterized separately as an open-loop baseline.
   </p>
 
-  <h3>What makes this novel</h3>
+  <h3>Novel contributions</h3>
   <p>
-    This is <strong>not a typical VLA / imitation-learning setting</strong>, and the novelty is the
-    setting itself: a <em>commanded-force</em>, closed-loop control problem on a per-video-calibrated
-    digital twin. The clearest way to see it is to line up inputs, outputs, and supervision against
-    the nearest prior work:
+    As the subtitle states, the contribution is the <em>setting</em>: commanded-force tracking on a
+    per-video-calibrated deformable twin, spanning a wide stiffness range. Lining up inputs, outputs,
+    and supervision against the nearest prior work makes the gap concrete:
   </p>
   <div class="table-scroll card">
     <table>
@@ -260,39 +247,45 @@
         </tr>
         <tr style="background:#f0f7ff">
           <td><strong>Ours</strong></td>
-          <td>physics state + achieved force + <em>commanded force goal</em></td>
-          <td>per-gripper displacements, closed-loop</td>
-          <td>inverse-dynamics BC + force-tracking RL reward</td>
-          <td>(lives inside the twin — see limitations)</td>
+          <td>state + force goal</td>
+          <td>gripper displacements</td>
+          <td>target force trajectory (via BC and RL)</td>
+          <td>simulator only (as of now)</td>
         </tr>
       </tbody>
     </table>
   </div>
   <p>
-    Concretely, we implement a <strong>closed-loop driver hooked directly into PhysTwin's Warp GPU
-    simulator</strong>, build a policy dataset from real and synthetic rollouts, and train policies that
-    actively <em>regulate</em> contact force — not just replay or predict it. No prior PhysTwin work
-    does this, and none of the neighboring lines above takes a force trajectory as the task
-    specification.
+    Concretely, we implement a driver hooked directly into PhysTwin's Warp GPU simulator, build a
+    policy dataset from real and synthetic rollouts, and train policies that actively <em>regulate</em>
+    contact force — not just replay or predict it. No prior PhysTwin work does this, and none of the
+    neighboring lines above takes a force trajectory as the task specification.
   </p>
 
-  <div class="gif-row">
+  <div class="video-trio">
     <figure>
-      <img src="assets/phystwin/force_cloth.gif" alt="Force visualization on cloth">
-      <p class="caption">Cloth — simulator force arrows</p>
+      <video autoplay muted loop playsinline>
+        <source src="assets/malak/videos/OBJ_rope_particles.mp4" type="video/mp4">
+      </video>
+      <p class="caption">Rope — low stiffness</p>
     </figure>
     <figure>
-      <img src="assets/phystwin/force_rope.gif" alt="Force visualization on rope">
-      <p class="caption">Rope — simulator force arrows</p>
+      <video autoplay muted loop playsinline>
+        <source src="assets/malak/videos/OBJ_cloth_particles.mp4" type="video/mp4">
+      </video>
+      <p class="caption">Cloth — medium stiffness</p>
     </figure>
     <figure>
-      <img src="assets/phystwin/force_sloth.gif" alt="Force visualization on sloth toy">
-      <p class="caption">Sloth — simulator force arrows</p>
+      <video autoplay muted loop playsinline>
+        <source src="assets/malak/videos/OBJ_sloth_particles.mp4" type="video/mp4">
+      </video>
+      <p class="caption">Plush toy — high stiffness</p>
     </figure>
   </div>
   <p class="caption" style="text-align:center">
-    Force arrows are computed from spring stretch inside the simulator — no physical sensors involved.
-    Colored arrow = achieved force; dashed arrow = goal force (in closed-loop rollouts).
+    Our force-tracking rollouts across the three object types. Particles are the simulated object;
+    the solid arrow is the force the gripper produces, the dashed arrow is the commanded target.
+    The same control problem spans objects whose stiffness differs by orders of magnitude.
   </p>
 </section>
 
@@ -470,7 +463,7 @@
 
 <!-- ===================== ARSHIA — OPEN LOOP + FORWARD ML ===================== -->
 <section id="open-loop">
-  <h2><span class="tag tag-arshia">Arshia</span> Open-Loop Physics Sweeps &amp; Forward Model</h2>
+  <h2>Open-Loop Physics Sweeps &amp; Forward Model</h2>
   <p>
     <strong>Teacher forcing:</strong> replay a fixed synthetic gripper script with no feedback.
     The only variables are physics knobs — object stiffness (×0.5, ×1.0, ×2.0) and surface proxies
@@ -551,14 +544,14 @@
   </div>
 
   <p>
-    While Arshia characterizes the <em>forward</em> direction (deformation → force),
-    Malak addresses the <em>inverse</em>: given a desired force, what gripper motion achieves it?
+    The open-loop study above characterizes the <em>forward</em> direction (deformation → force);
+    the rest of this page addresses the <em>inverse</em>: given a desired force, what gripper motion achieves it?
   </p>
 </section>
 
 <!-- ===================== CLOSED-LOOP ===================== -->
 <section id="closed-loop">
-  <h2><span class="tag tag-malak">Malak</span> Closed-Loop Force Control</h2>
+  <h2>Closed-Loop Force Control</h2>
 
   <h3>From teacher forcing to student forcing</h3>
   <p>
@@ -569,8 +562,8 @@
     This is called <em>exposure bias</em> or <em>covariate shift</em>.
   </p>
   <p>
-    Arshia's open-loop setup is teacher forcing: the expert gripper trajectory is replayed exactly.
-    Malak's closed-loop setup is student forcing: the policy drives grippers at every step.
+    The open-loop setup is teacher forcing: the expert gripper trajectory is replayed exactly.
+    The closed-loop setup is student forcing: the policy drives grippers at every step.
     One imperfect move puts the simulation into a state outside the training distribution,
     and the policy has no training signal for recovering from it.
     This distinction explains almost every failure mode in the experiments below.
@@ -810,7 +803,7 @@
 
 <!-- ===================== EXPERIMENTS ===================== -->
 <section id="experiments">
-  <h2><span class="tag tag-malak">Malak</span> Experiments &amp; Improvements</h2>
+  <h2>Experiments &amp; Improvements</h2>
 
   <p>
     The closed-loop work proceeded in stages. Each experiment addressed a specific failure mode
@@ -1135,7 +1128,7 @@
 
 <!-- ===================== PUSHING FURTHER ===================== -->
 <section id="pushing-further">
-  <h2><span class="tag tag-malak">Malak</span> Pushing Further — Ensemble, Diagnosis &amp; Generalization</h2>
+  <h2>Pushing Further — Ensemble, Diagnosis &amp; Generalization</h2>
 
   <p>
     The experiment sequence above produced two complementary specialists: the noise-injected
