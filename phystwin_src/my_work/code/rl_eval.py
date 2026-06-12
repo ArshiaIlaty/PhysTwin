@@ -24,20 +24,29 @@ REPO_ROOT = MY_WORK.parent
 
 def extract_supervised_compatible_dir(rl_ckpt: Path, out_dir: Path,
                                        scaler_src_dir: Path):
-    """Make the RL actor look like a normal supervised policy_dir for eval."""
+    """Make the RL actor look like a normal supervised policy_dir for eval.
+
+    Policy-v2 runs (scaler_src_dir has arch.json) store the transformer under
+    actor."model.*"; strip that prefix and copy the v2 artifacts so
+    run_closed_loop's arch.json loader picks it up.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt = torch.load(rl_ckpt, map_location="cpu", weights_only=True)
     actor_sd = ckpt["actor"]
+    is_v2 = (scaler_src_dir / "arch.json").exists()
     clean_sd = {}
     for k, v in actor_sd.items():
         if k.startswith("log_std"):
             continue
-        if k.startswith("net."):
+        if is_v2 and k.startswith("model."):
+            clean_sd[k[len("model."):]] = v
+        elif not is_v2 and k.startswith("net."):
             clean_sd[k] = v
     torch.save(clean_sd, out_dir / "policy.pt")
-    for f in ["feat_scaler.pkl", "target_scalers.pkl"]:
-        src = scaler_src_dir / f
-        shutil.copy(src, out_dir / f)
+    files = (["scalers_v2.pkl", "arch.json", "target_scalers.pkl"] if is_v2
+             else ["feat_scaler.pkl", "target_scalers.pkl"])
+    for f in files:
+        shutil.copy(scaler_src_dir / f, out_dir / f)
 
 
 def main():

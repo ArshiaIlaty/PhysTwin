@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import pickle
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -51,6 +52,50 @@ class Actor(nn.Module):
 
     def forward(self, obs):
         mean = self.net(obs)
+        std = self.log_std.exp().expand_as(mean)
+        return mean, std
+
+    def dist(self, obs):
+        mean, std = self.forward(obs)
+        return Normal(mean, std)
+
+
+class ActorV2(nn.Module):
+    """Policy-v2 transformer actor (Fix I RL fine-tune).
+
+    Wraps PolicyTransformerV2 behind the same flat-obs interface the PPO loop
+    uses: the env emits already-scaled [past k×44 | goal k×6 | cond 6], and
+    forward() splits it back into the three streams. State-independent
+    log_std, same as the MLP Actor.
+    """
+
+    def __init__(self, arch: dict, init_log_std=-2.0):
+        super().__init__()
+        from policy_v2 import PolicyTransformerV2
+        self.model = PolicyTransformerV2(**arch)
+        a = self.model.arch
+        self.k_past, self.frame_dim = int(a["k_past"]), int(a["frame_dim"])
+        self.k_goal, self.goal_dim = int(a["k_goal"]), int(a["goal_dim"])
+        self.cond_dim = int(a["cond_dim"])
+        out_dim = int(a["out_dim"])
+        self.log_std = nn.Parameter(torch.full((out_dim,), float(init_log_std)))
+
+    def split(self, obs):
+        single = obs.dim() == 1
+        if single:
+            obs = obs.unsqueeze(0)
+        n_p = self.k_past * self.frame_dim
+        n_g = self.k_goal * self.goal_dim
+        past = obs[:, :n_p].reshape(-1, self.k_past, self.frame_dim)
+        goal = obs[:, n_p:n_p + n_g].reshape(-1, self.k_goal, self.goal_dim)
+        cond = obs[:, n_p + n_g:n_p + n_g + self.cond_dim]
+        return past, goal, cond, single
+
+    def forward(self, obs):
+        past, goal, cond, single = self.split(obs)
+        mean = self.model(past, goal, cond)
+        if single:
+            mean = mean.squeeze(0)
         std = self.log_std.exp().expand_as(mean)
         return mean, std
 
@@ -198,12 +243,21 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("device=%s", device)
 
-    # Load scalers from BC warm-start dir
+    # Load scalers from BC warm-start dir. arch.json marks a policy-v2 dir:
+    # the env then scales internally (scalers_v2.pkl) and emits the flat v2 obs.
     bc_dir = args.bc_policy_dir
-    with open(bc_dir / "feat_scaler.pkl", "rb") as f:
-        feat_scaler = pickle.load(f)
+    v2_arch = None
+    feat_scaler = None
+    if (bc_dir / "arch.json").exists():
+        with open(bc_dir / "arch.json") as f:
+            v2_arch = json.load(f)
+        logger.info("policy-v2 warm-start dir detected (%s)", bc_dir)
+    else:
+        with open(bc_dir / "feat_scaler.pkl", "rb") as f:
+            feat_scaler = pickle.load(f)
     with open(bc_dir / "target_scalers.pkl", "rb") as f:
         target_scalers = pickle.load(f)
+    v2_policy_dir = bc_dir if v2_arch is not None else None
 
     # Build env (multi-case if --case_specs given, else single-case)
     if args.case_specs:
@@ -220,6 +274,10 @@ def train(args):
             target_scalers=target_scalers,
             ramp_direction=args.ramp_direction,
             max_action_m=args.max_action_m,
+            action_penalty_alpha=args.action_penalty_alpha,
+            stiffness_normalizer=args.stiffness_normalizer,
+            overshoot_beta=args.overshoot_beta,
+            v2_policy_dir=v2_policy_dir,
         )
         logger.info("Multi-case training across %d (case, profile) pairs", len(specs))
     else:
@@ -231,27 +289,40 @@ def train(args):
             force_reward_scale=args.force_reward_scale,
             ramp_direction=args.ramp_direction,
             max_action_m=args.max_action_m,
+            action_penalty_alpha=args.action_penalty_alpha,
+            stiffness_normalizer=args.stiffness_normalizer,
+            overshoot_beta=args.overshoot_beta,
+            v2_policy_dir=v2_policy_dir,
         )
     obs_dim = int(env.obs_dim); act_dim = int(env.act_dim)
     logger.info("env episode length T=%d, obs_dim=%d, act_dim=%d",
                 env.T, obs_dim, act_dim)
 
-    # Build actor + critic — sized for the env's obs_dim (43 / 44 / 45)
-    actor = Actor(in_dim=obs_dim, hidden=args.hidden, out_dim=act_dim,
-                   init_log_std=args.init_log_std).to(device)
+    # Build actor + critic — MLP actor sized for the env's obs_dim
+    # (43/44/45), or the policy-v2 transformer actor on the flat v2 obs.
+    if v2_arch is not None:
+        actor = ActorV2(v2_arch, init_log_std=args.init_log_std).to(device)
+    else:
+        actor = Actor(in_dim=obs_dim, hidden=args.hidden, out_dim=act_dim,
+                      init_log_std=args.init_log_std).to(device)
     critic = Critic(in_dim=obs_dim, hidden=args.hidden).to(device)
 
-    # BC warm-start: load supervised policy weights into actor.net
+    # BC warm-start: load supervised policy weights into the actor backbone
     if not args.no_warm_start:
         bc_sd = torch.load(bc_dir / "policy.pt", map_location=device, weights_only=True)
-        # Supervised PolicyMLP stored as Sequential(net=...) — strip "net." prefix if present
-        clean_sd = {}
-        for k, v in bc_sd.items():
-            new_k = k[4:] if k.startswith("net.") else k
-            clean_sd[new_k] = v
-        actor.net.load_state_dict(clean_sd, strict=True)
-        logger.info("BC warm-start: loaded %d params from %s",
-                    sum(v.numel() for v in clean_sd.values()), bc_dir)
+        if v2_arch is not None:
+            actor.model.load_state_dict(bc_sd, strict=True)
+            logger.info("BC warm-start (v2 transformer): loaded %d params from %s",
+                        sum(v.numel() for v in bc_sd.values()), bc_dir)
+        else:
+            # Supervised PolicyMLP stored as Sequential(net=...) — strip "net." prefix
+            clean_sd = {}
+            for k, v in bc_sd.items():
+                new_k = k[4:] if k.startswith("net.") else k
+                clean_sd[new_k] = v
+            actor.net.load_state_dict(clean_sd, strict=True)
+            logger.info("BC warm-start: loaded %d params from %s",
+                        sum(v.numel() for v in clean_sd.values()), bc_dir)
 
     opt_a = torch.optim.Adam(actor.parameters(), lr=args.lr_actor)
     opt_c = torch.optim.Adam(critic.parameters(), lr=args.lr_critic)
@@ -264,8 +335,12 @@ def train(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "checkpoints").mkdir(exist_ok=True)
     # Save scalers in run dir so eval can find them
-    with open(out_dir / "feat_scaler.pkl", "wb") as f:
-        pickle.dump(feat_scaler, f)
+    if v2_arch is not None:
+        shutil.copy(bc_dir / "scalers_v2.pkl", out_dir / "scalers_v2.pkl")
+        shutil.copy(bc_dir / "arch.json", out_dir / "arch.json")
+    else:
+        with open(out_dir / "feat_scaler.pkl", "wb") as f:
+            pickle.dump(feat_scaler, f)
     with open(out_dir / "target_scalers.pkl", "wb") as f:
         pickle.dump(target_scalers, f)
     # Save config
@@ -286,6 +361,9 @@ def train(args):
     obs_un = env.reset(seed=args.seed)
     ep_return = 0.0; ep_len = 0
     ep_force_traj = []
+    # Fix G diagnostics: accumulate per-step reward components, reset per update.
+    rc_force_sum = 0.0; rc_action_sum = 0.0; rc_overshoot_sum = 0.0
+    rc_steps = 0
     while total_steps < args.total_steps:
         buf.reset()
         for step in range(args.n_steps_per_update):
@@ -302,6 +380,10 @@ def train(args):
             ep_return += reward
             ep_len += 1
             ep_force_traj.append(np.linalg.norm(info["force_achieved"], axis=-1).sum())
+            rc_force_sum += info.get("r_force", reward)
+            rc_action_sum += info.get("r_action", 0.0)
+            rc_overshoot_sum += info.get("r_overshoot", 0.0)
+            rc_steps += 1
 
             buf.add(obs_t, action, logprob,
                      torch.tensor(reward, device=device).float(),
@@ -353,6 +435,14 @@ def train(args):
         recent_rel = episode_release_fracs[-20:] if episode_release_fracs else [0.0]
         mean_ret = float(np.mean(recent))
         mean_rel = float(np.mean(recent_rel))
+        # Per-step reward component means for this update window
+        n_rc = max(rc_steps, 1)
+        mean_rc_force = rc_force_sum / n_rc
+        mean_rc_action = rc_action_sum / n_rc
+        mean_rc_overshoot = rc_overshoot_sum / n_rc
+        rc_force_sum = rc_action_sum = rc_overshoot_sum = 0.0
+        rc_steps = 0
+
         log_row = {
             "update": update_idx,
             "total_steps": total_steps,
@@ -361,17 +451,22 @@ def train(args):
             "n_episodes_done": len(episode_returns),
             "log_std_mean": float(actor.log_std.mean().item()),
             "elapsed_sec": time.time() - t0,
+            "mean_r_force": float(mean_rc_force),
+            "mean_r_action": float(mean_rc_action),
+            "mean_r_overshoot": float(mean_rc_overshoot),
             **stats,
         }
         train_log.append(log_row)
         logger.info(
             "update=%d steps=%d eps=%d  ret=%+.3f  release=%.2f  pi_loss=%.3f  "
-            "v_loss=%.3f  ent=%.3f  kl=%.4f  log_std=%.2f  epochs=%d  %s",
+            "v_loss=%.3f  ent=%.3f  kl=%.4f  log_std=%.2f  epochs=%d  "
+            "rc_force=%+.4f rc_action=%+.4f rc_over=%+.4f  %s",
             update_idx, total_steps, len(episode_returns),
             mean_ret, mean_rel,
             stats["policy_loss"], stats["value_loss"], stats["entropy"],
             stats["approx_kl"], log_row["log_std_mean"],
             stats["epochs_done"],
+            mean_rc_force, mean_rc_action, mean_rc_overshoot,
             "[actor frozen]" if stats.get("actor_frozen") else "",
         )
 
@@ -428,6 +523,17 @@ def main():
                    help="Divisor in reward (Newtons)")
     p.add_argument("--max_action_m", type=float, default=0.02,
                    help="Clip per-frame action magnitude (m)")
+    # Fix G: stiffness-shaped reward
+    p.add_argument("--action_penalty_alpha", type=float, default=0.0,
+                   help="Fix G: coefficient for stiffness-scaled action penalty. "
+                        "reward -= alpha * exp(log_spring_Y - C) * ||action_m||^2 "
+                        "(action_m is unscaled meters). 0 = disable.")
+    p.add_argument("--stiffness_normalizer", type=float, default=9.0,
+                   help="Fix G: C in the exponent (typical rope mean log_spring_Y).")
+    p.add_argument("--overshoot_beta", type=float, default=0.0,
+                   help="Fix G: optional overshoot penalty coefficient. "
+                        "reward -= beta * sum_g max(0, ||F_a_g|| - ||F_g_g||)^2 in N^2. "
+                        "0 = disable. Use very small values (e.g. 1e-9).")
     # PPO
     p.add_argument("--total_steps", type=int, default=200_000)
     p.add_argument("--n_steps_per_update", type=int, default=2048)

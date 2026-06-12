@@ -53,6 +53,10 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from features import (  # noqa: E402
     compute_31d_features, get_log_spring_Y_mean, get_material_descriptor,
+    get_stiffness_stats,
+)
+from policy_v2 import (  # noqa: E402
+    PolicyTransformerV2, cmd_scale_from_goal_traj, load_policy_v2,
 )
 
 from qqtt import InvPhyTrainerWarp  # noqa: E402
@@ -143,24 +147,91 @@ class PolicyMLP(nn.Module):
         return self.net(x)
 
 
+class PolicyMLPWithEncoder(nn.Module):
+    """Fix H encoder policy — mirror of train_policy.PolicyMLPWithEncoder.
+
+    Input is the scaled feature row `[base_dim state/force | raw_dim stiffness]`;
+    the stiffness tail is encoded to a latent and concatenated before the head.
+    The feature-construction contract is identical to the descriptor policies,
+    so the rollout closure feeds the raw_stiffness vector exactly where Fix F
+    fed its 2-vec descriptor.
+    """
+
+    def __init__(self, base_dim=43, raw_dim=5, hidden=256, latent_dim=8,
+                 enc_hidden=32, out_dim=6):
+        super().__init__()
+        self.base_dim = int(base_dim)
+        self.raw_dim = int(raw_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(raw_dim, enc_hidden), nn.ReLU(),
+            nn.Linear(enc_hidden, latent_dim),
+        )
+        self.net = nn.Sequential(
+            nn.Linear(base_dim + latent_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, out_dim),
+        )
+
+    def forward(self, x):
+        base = x[:, :self.base_dim]
+        latent = self.encoder(x[:, self.base_dim:self.base_dim + self.raw_dim])
+        return self.net(torch.cat([base, latent], dim=1))
+
+
+def descriptor_for_case(case_name: str, expected_md_dim: int):
+    """Return the per-case descriptor a policy with `expected_md_dim` extra
+    input dims wants, or None for a plain 43-D policy. Dispatches by width:
+    1 → Fix E log-stiffness, 2 → Fix F descriptor, 5/6 → Fix H stiffness stats
+    (6 = leakage ablation with force scale)."""
+    if expected_md_dim <= 0:
+        return None
+    if expected_md_dim == 1:
+        return get_log_spring_Y_mean(case_name)
+    if expected_md_dim == 2:
+        return get_material_descriptor(case_name)
+    if expected_md_dim in (5, 6):
+        return get_stiffness_stats(case_name, include_force_scale=(expected_md_dim == 6))
+    raise ValueError(f"unsupported descriptor dim {expected_md_dim} for {case_name}")
+
+
 def load_policy_artifacts(policy_dir: Path):
     """Load model + scalers from a trained seed directory.
 
-    Both `in_dim` and `hidden` are inferred from the saved state_dict so
-    we can load any (43/44/45 input)×(256/512/…) variant without
-    hardcoded args.
+    Policy v2 (transformer) dirs are marked by an explicit arch.json and
+    return scalers as the {'frame','goal','cond'} dict. Older MLP dirs have
+    all dims inferred from the saved state_dict, so we can load any
+    descriptor variant (43/44/45) or the Fix H encoder variant (`encoder.*`
+    keys, 48/49-D input) at any hidden width without hardcoded args.
     """
+    if (policy_dir / "arch.json").exists():
+        model, _ = load_policy_v2(policy_dir)
+        with open(policy_dir / "scalers_v2.pkl", "rb") as f:
+            scalers = pickle.load(f)
+        with open(policy_dir / "target_scalers.pkl", "rb") as f:
+            target_scalers = pickle.load(f)
+        return model, scalers, target_scalers
     with open(policy_dir / "feat_scaler.pkl", "rb") as f:
         feat_scaler = pickle.load(f)
     with open(policy_dir / "target_scalers.pkl", "rb") as f:
         target_scalers = pickle.load(f)
     sd = torch.load(policy_dir / "policy.pt", map_location="cpu", weights_only=True)
-    # Sniff dims from the first layer weight shape: [hidden, in_dim]
-    first_layer = sd["net.0.weight"]
-    hidden, in_dim = int(first_layer.shape[0]), int(first_layer.shape[1])
-    assert in_dim == int(feat_scaler["mean"].shape[0]), \
-        f"state_dict in_dim={in_dim} mismatches feat_scaler {feat_scaler['mean'].shape[0]}"
-    model = PolicyMLP(in_dim=in_dim, hidden=hidden, out_dim=6)
+    scaler_dim = int(feat_scaler["mean"].shape[0])
+    if any(k.startswith("encoder.") for k in sd):
+        enc_hidden, raw_dim = (int(s) for s in sd["encoder.0.weight"].shape)
+        latent_dim = int(sd["encoder.2.weight"].shape[0])
+        hidden, head_in = (int(s) for s in sd["net.0.weight"].shape)
+        base_dim = head_in - latent_dim
+        assert base_dim + raw_dim == scaler_dim, \
+            f"encoder in_dim={base_dim + raw_dim} mismatches feat_scaler {scaler_dim}"
+        model = PolicyMLPWithEncoder(base_dim=base_dim, raw_dim=raw_dim,
+                                     hidden=hidden, latent_dim=latent_dim,
+                                     enc_hidden=enc_hidden, out_dim=6)
+    else:
+        # Sniff dims from the first layer weight shape: [hidden, in_dim]
+        hidden, in_dim = (int(s) for s in sd["net.0.weight"].shape)
+        assert in_dim == scaler_dim, \
+            f"state_dict in_dim={in_dim} mismatches feat_scaler {scaler_dim}"
+        model = PolicyMLP(in_dim=in_dim, hidden=hidden, out_dim=6)
     model.load_state_dict(sd)
     model.eval()
     return model, feat_scaler, target_scalers
@@ -170,8 +241,10 @@ def make_policy_callable(model, feat_scaler, target_scalers, material: str,
                           F_user_target=None, goal_shaping: str = "direct",
                           max_step_force: float = 500.0,
                           log_shaped_goals: list | None = None,
-                          material_descriptor=None):
-    # material_descriptor may be a scalar (Fix E, 1 dim) or 2-vector (Fix F, 2 dim)
+                          material_descriptor=None, open_loop: bool = False):
+    # material_descriptor is the per-case tail appended after [state, force_now,
+    # goal]: scalar (Fix E), 2-vec (Fix F), or 5/6-vec stiffness stats (Fix H
+    # encoder — the model splits it back out and encodes it internally).
     """Closure: (state31, force_now_pad, force_goal_pad, frame_idx) -> Δ [2,3].
 
     goal_shaping:
@@ -197,7 +270,7 @@ def make_policy_callable(model, feat_scaler, target_scalers, material: str,
     f_mean = feat_scaler["mean"].astype(np.float32)
     f_std = feat_scaler["std"].astype(np.float32)
     max_step = float(max_step_force)
-    expected_md_dim = f_mean.shape[0] - 43  # 0 if no descriptor, 1 (Fix E), 2 (Fix F)
+    expected_md_dim = f_mean.shape[0] - 43  # 0 none, 1 Fix E, 2 Fix F, 5/6 Fix H
     md = None
     if expected_md_dim > 0:
         if material_descriptor is None:
@@ -211,6 +284,13 @@ def make_policy_callable(model, feat_scaler, target_scalers, material: str,
                 f"policy expects {expected_md_dim}")
 
     def policy_fn(state31, force_now_pad, force_goal_pad, frame_idx):
+        if open_loop:
+            # Open-loop ablation: cut the achieved-force feedback. The policy
+            # acts on state + goal only, blind to the realized F(t). Must be
+            # paired with an open-loop-trained checkpoint (train_policy.py
+            # --zero_force_now) whose scaler expects zeros here. Done first so
+            # the (default-off) incremental branch is also feedback-free.
+            force_now_pad = np.zeros_like(force_now_pad)
         if goal_shaping == "incremental":
             user_target_t = np.asarray(F_user_target[frame_idx], dtype=np.float32)
             delta_target = np.clip(
@@ -231,6 +311,92 @@ def make_policy_callable(model, feat_scaler, target_scalers, material: str,
         with torch.no_grad():
             y = model(torch.from_numpy(x).unsqueeze(0)).numpy()[0]
         delta = (y * std + mean).reshape(2, 3).astype(np.float32)
+        return delta
+
+    return policy_fn
+
+
+def material_vector_for_arch(arch: dict, case_name: str) -> np.ndarray:
+    """Per-case material vector matching a v2 arch's stiff_dim: 5 = Fix I
+    stiffness stats, 11 = Fix K enriched stats (spring split + collision)."""
+    sd = int(arch.get("stiff_dim", 5))
+    if sd == 11:
+        from features import get_material_stats
+        return get_material_stats(case_name)
+    return get_stiffness_stats(case_name, include_force_scale=(sd == 6))
+
+
+def make_policy_callable_v2(model, scalers, target_scalers, material: str,
+                            F_goal_full, case_name: str, n_ctrl_parts: int,
+                            goal_shaping: str = "direct"):
+    """Closure for the Fix I transformer policy (policy_v2.py).
+
+    Maintains its own history of the last k_past frames (state31, force_now,
+    prev applied action) across calls — run_policy()'s per-frame protocol is
+    unchanged. Closes over the full COMMANDED goal trajectory for the goal
+    preview and the cmd_scale conditioning; both are deployment-legitimate
+    (they derive from the command, not from recorded data).
+
+    Window/time semantics match training exactly: the driver's call at loop
+    index t corresponds to training row t-1 (state of frame t-1, goal y[t]),
+    so preview slot s = F_goal_full[clip(t + s, ..., T-1)] with slot 0 being
+    the force_goal the driver passes in.
+    """
+    if goal_shaping != "direct":
+        raise NotImplementedError("policy v2 supports goal_shaping='direct' only")
+    if material not in target_scalers:
+        raise KeyError(f"material '{material}' not in target_scalers "
+                       f"(have {list(target_scalers.keys())})")
+    from collections import deque
+
+    k_past, k_goal = model.k_past, model.k_goal
+    ts = target_scalers[material]
+    t_mean = ts["mean"].astype(np.float32)
+    t_std = ts["std"].astype(np.float32)
+    fr_m = scalers["frame"]["mean"].astype(np.float32)
+    fr_s = scalers["frame"]["std"].astype(np.float32)
+    go_m = scalers["goal"]["mean"].astype(np.float32)
+    go_s = scalers["goal"]["std"].astype(np.float32)
+    co_m = scalers["cond"]["mean"].astype(np.float32)
+    co_s = scalers["cond"]["std"].astype(np.float32)
+
+    F_goal_full = np.asarray(F_goal_full, dtype=np.float32)   # [T, 2, 3]
+    T = F_goal_full.shape[0]
+    stiff = material_vector_for_arch(model.arch, case_name)   # no leakage
+    cmd_scale = cmd_scale_from_goal_traj(F_goal_full, n_ctrl_parts)
+    cond = (np.concatenate([stiff, [cmd_scale]]).astype(np.float32) - co_m) / co_s
+    cond_t = torch.from_numpy(cond).unsqueeze(0)
+
+    history = deque(maxlen=k_past)   # raw 43-D [state31|force_now|prev_action]
+    prev_action = np.zeros(6, dtype=np.float32)
+    # v2.1 ablation support: models trained with --drop_prev_action expect
+    # zeros in the prev_action slots at rollout too.
+    use_prev_action = bool(getattr(model, "arch", {}).get("use_prev_action", True))
+
+    def policy_fn(state31, force_now_pad, force_goal_pad, frame_idx):
+        nonlocal prev_action
+        frame43 = np.concatenate(
+            [state31, force_now_pad.flatten(), prev_action]).astype(np.float32)
+        history.append(frame43)
+
+        rows = list(history)
+        n_pad = k_past - len(rows)
+        rows = [rows[0]] * n_pad + rows          # repeat oldest (training: clamp)
+        valid = np.array([0.0] * n_pad + [1.0] * len(history), dtype=np.float32)
+        past = (np.stack(rows) - fr_m) / fr_s
+        past = np.concatenate([past, valid[:, None]], axis=1)  # [k_past, 44]
+
+        idx = np.clip(frame_idx + np.arange(k_goal), 0, T - 1)
+        goal = (F_goal_full[idx].reshape(k_goal, 6) - go_m) / go_s
+
+        with torch.no_grad():
+            y = model(torch.from_numpy(past).unsqueeze(0).float(),
+                      torch.from_numpy(goal).unsqueeze(0).float(),
+                      cond_t).numpy()[0]
+        delta = (y * t_std + t_mean).reshape(2, 3).astype(np.float32)
+        delta[n_ctrl_parts:] = 0.0   # masked group: match training convention
+        if use_prev_action:
+            prev_action = delta.reshape(6).copy()
         return delta
 
     return policy_fn
@@ -289,21 +455,20 @@ def build_profile(profile: str, case_name: str, n_ctrl_parts: int, material: str
         model, fs, ts = load_policy_artifacts(args.policy_dir)
         F_user = recorded_v2["y_per_ctrl"].astype(np.float32)
         shaped_log = [] if args.goal_shaping == "incremental" else None
-        # Try Fix F (2-vec) first; fall back to Fix E (scalar) if dataset_v2 missing.
-        md = None
-        try:
-            md = get_material_descriptor(args.case_name)
-        except Exception:
-            try:
-                md = get_log_spring_Y_mean(args.case_name)
-            except Exception:
-                pass
-        pfn = make_policy_callable(
-            model, fs, ts, material,
-            F_user_target=F_user, goal_shaping=args.goal_shaping,
-            max_step_force=args.max_step_force, log_shaped_goals=shaped_log,
-            material_descriptor=md,
-        )
+        if isinstance(model, PolicyTransformerV2):
+            pfn = make_policy_callable_v2(
+                model, fs, ts, material, F_goal_full=F_user,
+                case_name=args.case_name, n_ctrl_parts=n_ctrl_parts,
+                goal_shaping=args.goal_shaping,
+            )
+        else:
+            md = descriptor_for_case(args.case_name, fs["mean"].shape[0] - 43)
+            pfn = make_policy_callable(
+                model, fs, ts, material,
+                F_user_target=F_user, goal_shaping=args.goal_shaping,
+                max_step_force=args.max_step_force, log_shaped_goals=shaped_log,
+                material_descriptor=md, open_loop=args.open_loop,
+            )
         return pfn, F_user, {
             "deltas_source": "policy", "policy_dir": str(args.policy_dir),
             "goal_shaping": args.goal_shaping,
@@ -460,21 +625,20 @@ def build_profile(profile: str, case_name: str, n_ctrl_parts: int, material: str
             F_goal[:, 0, 0] = ramp
             ramp_direction_info = "x_axis"
         shaped_log = [] if args.goal_shaping == "incremental" else None
-        # Try Fix F (2-vec) first; fall back to Fix E (scalar) if dataset_v2 missing.
-        md = None
-        try:
-            md = get_material_descriptor(args.case_name)
-        except Exception:
-            try:
-                md = get_log_spring_Y_mean(args.case_name)
-            except Exception:
-                pass
-        pfn = make_policy_callable(
-            model, fs, ts, material,
-            F_user_target=F_goal, goal_shaping=args.goal_shaping,
-            max_step_force=args.max_step_force, log_shaped_goals=shaped_log,
-            material_descriptor=md,
-        )
+        if isinstance(model, PolicyTransformerV2):
+            pfn = make_policy_callable_v2(
+                model, fs, ts, material, F_goal_full=F_goal,
+                case_name=args.case_name, n_ctrl_parts=n_ctrl_parts,
+                goal_shaping=args.goal_shaping,
+            )
+        else:
+            md = descriptor_for_case(args.case_name, fs["mean"].shape[0] - 43)
+            pfn = make_policy_callable(
+                model, fs, ts, material,
+                F_user_target=F_goal, goal_shaping=args.goal_shaping,
+                max_step_force=args.max_step_force, log_shaped_goals=shaped_log,
+                material_descriptor=md, open_loop=args.open_loop,
+            )
         return pfn, F_goal, {
             "deltas_source": "policy",
             "policy_dir": str(args.policy_dir),
@@ -524,6 +688,12 @@ def main():
     ap.add_argument("--max_step_force", type=float, default=500.0,
                     help="Per-frame goal step limit (N) for incremental shaping")
     ap.add_argument("--base_path", default="./data/different_types")
+    ap.add_argument("--open_loop", action="store_true",
+                    help="Open-loop ablation: zero the achieved-force feedback "
+                         "(force_now) fed to the MLP policy each frame, so it "
+                         "acts blind to F(t). Pair with an open-loop-trained "
+                         "checkpoint (train_policy.py --zero_force_now). "
+                         "Adds __openloop to the output npz name.")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -583,7 +753,8 @@ def main():
     # Save
     args.out_dir.mkdir(parents=True, exist_ok=True)
     shaping_tag = "" if args.goal_shaping == "direct" else f"__shaped{int(args.max_step_force)}"
-    out_path = args.out_dir / f"{args.case_name}__{args.profile}{shaping_tag}.npz"
+    open_loop_tag = "__openloop" if args.open_loop else ""
+    out_path = args.out_dir / f"{args.case_name}__{args.profile}{shaping_tag}{open_loop_tag}.npz"
     save_dict = dict(
         positions=positions,
         forces=forces,
@@ -597,6 +768,7 @@ def main():
         info=json.dumps(info_log),
         goal_shaping=args.goal_shaping,
         max_step_force=np.float32(args.max_step_force),
+        open_loop=bool(args.open_loop),
     )
     if shaped_log is not None and len(shaped_log) > 0:
         # Logged at policy-call time, so length = T-1 (no entry for frame 0)

@@ -58,7 +58,8 @@ def preflight(case: str, dataset_v2_dir: Path, repo_root: Path) -> str | None:
 
 
 def run_one(case: str, profile: str, out_dir: Path, policy_dir: Path,
-             repo_root: Path, verbose: bool = False) -> bool:
+             repo_root: Path, verbose: bool = False,
+             open_loop: bool = False) -> bool:
     cmd = [
         sys.executable,
         str(MY_WORK / "code" / "run_closed_loop.py"),
@@ -69,6 +70,8 @@ def run_one(case: str, profile: str, out_dir: Path, policy_dir: Path,
     ]
     if profile == "policy_ramp":
         cmd += ["--ramp_scale", "1.0"]
+    if open_loop:
+        cmd += ["--open_loop"]
     logger.info("running: %s", " ".join(cmd[-7:]))
     proc = subprocess.run(
         cmd, cwd=str(repo_root),
@@ -172,8 +175,17 @@ def main():
     p.add_argument("--dataset_v2_dir", type=Path, default=DEFAULT_DATASET_V2)
     p.add_argument("--summary_only", action="store_true",
                    help="Skip rollouts; aggregate npzs already in --out")
+    p.add_argument("--open_loop", action="store_true",
+                   help="Open-loop ablation sweep: pass --open_loop to each "
+                        "rollout (zero force_now feedback). Use with an "
+                        "open-loop-trained --policy_dir. npzs are written with a "
+                        "__openloop suffix; summary keys stay {case}__{profile} "
+                        "so they line up with the closed-loop summary.")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
+
+    # run_closed_loop.py appends this suffix to the npz name under --open_loop.
+    npz_suffix = "__openloop" if args.open_loop else ""
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -210,14 +222,14 @@ def main():
             logger.info("[%d/%d] case=%s profile=%s",
                         i, len(case_profile_pairs), case, profile)
             if run_one(case, profile, args.out, args.policy_dir, REPO_ROOT,
-                        verbose=args.verbose):
+                        verbose=args.verbose, open_loop=args.open_loop):
                 n_ok += 1
         logger.info("rollouts: %d/%d ok", n_ok, len(case_profile_pairs))
 
     # Aggregate
     per_rollout: dict = {}
     for case, profile in case_profile_pairs:
-        npz = args.out / f"{case}__{profile}.npz"
+        npz = args.out / f"{case}__{profile}{npz_suffix}.npz"
         if not npz.exists():
             logger.warning("missing npz: %s", npz.name)
             continue
@@ -232,6 +244,7 @@ def main():
         "per_rollout": per_rollout,
         "per_material": per_material,
         "policy_dir": str(args.policy_dir),
+        "open_loop": bool(args.open_loop),
         "failed_preflight": failed_preflight,
         "n_rollouts_attempted": len(case_profile_pairs),
         "n_rollouts_with_metrics": len(per_rollout),

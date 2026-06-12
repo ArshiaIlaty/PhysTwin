@@ -164,6 +164,90 @@ def get_material_descriptor(case_name: str, dataset_v2_dir=None) -> np.ndarray:
     ], dtype=np.float32)
 
 
+# ----- learned material encoder (Fix H) ----------------------------------
+
+# Quantile probabilities for the stiffness-distribution summary. The mean +
+# std + these three quantiles give a 5-D leakage-free descriptor of the
+# per-spring log(spring_Y) distribution (vs Fix F's single .mean()).
+_STIFFNESS_QUANTILES = (0.1, 0.5, 0.9)
+STIFFNESS_STATS_DIM = 5            # [mean, std, q10, q50, q90]
+STIFFNESS_STATS_DIM_WITH_FORCE = 6  # + log_mean_force (leakage ablation only)
+
+
+def get_stiffness_stats(case_name: str,
+                        base_dir: str = ".",
+                        include_force_scale: bool = False,
+                        dataset_v2_dir=None) -> np.ndarray:
+    """Per-case summary of the per-spring log(spring_Y) distribution.
+
+    Returns [mean, std, q10, q50, q90] (float32) — the input to the Fix H
+    material encoder. Unlike Fix F's `get_material_descriptor`, this keeps the
+    *distributional shape* of stiffness (not just the mean) and is **stiffness
+    only**: no demo-force term, so nothing here leaks the replay goal.
+
+    PhysTwin fits a separate twin (separate spring_Y field) per case, so this
+    varies per case, but it is a per-case constant — identical for every frame
+    and every synthetic trajectory derived from the case. It is calibration
+    data available at deployment, analogous to a material's Young's modulus.
+
+    include_force_scale=True appends `get_log_mean_force` for the explicit
+    leakage ablation only — NOT for the headline encoder.
+    """
+    import torch
+    from pathlib import Path
+    paths = sorted(Path(base_dir, "experiments", case_name, "train").glob("best_*.pth"))
+    if not paths:
+        raise FileNotFoundError(f"No best_*.pth for {case_name}")
+    ckpt = torch.load(paths[0], map_location="cpu", weights_only=True)
+    log_Y = torch.log(ckpt["spring_Y"]).flatten().numpy().astype(np.float64)
+    quantiles = np.quantile(log_Y, _STIFFNESS_QUANTILES)
+    stats = [float(log_Y.mean()), float(log_Y.std())] + [float(q) for q in quantiles]
+    if include_force_scale:
+        stats.append(get_log_mean_force(case_name, dataset_v2_dir))
+    return np.asarray(stats, dtype=np.float32)
+
+
+MATERIAL_STATS_DIM = 11  # see get_material_stats
+
+
+def get_material_stats(case_name: str, base_dir: str = ".") -> np.ndarray:
+    """Fix K — enriched per-case material description (11-D, leakage-free).
+
+    Extends get_stiffness_stats with everything else PhysTwin's twin
+    calibration recovers, all per-case constants:
+
+      [0:5]  OBJECT-spring log(spring_Y): mean, std, q10, q50, q90
+      [5:7]  CONTROL-spring log(spring_Y): mean, std
+             (the control springs connect gripper to object — their stiffness
+             IS the gripper-displacement→force gain, i.e. the inverse-dynamics
+             gain the policy must implicitly know; pooling them with object
+             springs, as get_stiffness_stats does, washes this out)
+      [7:11] collide_elas, collide_fric, collide_object_elas,
+             collide_object_fric (calibrated ground/object collision physics)
+    """
+    import torch
+    from pathlib import Path
+    paths = sorted(Path(base_dir, "experiments", case_name, "train").glob("best_*.pth"))
+    if not paths:
+        raise FileNotFoundError(f"No best_*.pth for {case_name}")
+    ckpt = torch.load(paths[0], map_location="cpu", weights_only=True)
+    log_Y = torch.log(ckpt["spring_Y"]).flatten().numpy().astype(np.float64)
+    n_obj = int(ckpt["num_object_springs"])
+    obj, ctl = log_Y[:n_obj], log_Y[n_obj:]
+    q = np.quantile(obj, _STIFFNESS_QUANTILES)
+    stats = [float(obj.mean()), float(obj.std()),
+             float(q[0]), float(q[1]), float(q[2]),
+             float(ctl.mean()) if len(ctl) else float(obj.mean()),
+             float(ctl.std()) if len(ctl) else 0.0,
+             float(ckpt["collide_elas"].item()),
+             float(ckpt["collide_fric"].item()),
+             float(ckpt["collide_object_elas"].item()),
+             float(ckpt["collide_object_fric"].item())]
+    out = np.asarray(stats, dtype=np.float32)
+    assert out.shape[0] == MATERIAL_STATS_DIM
+    return out
+
+
 # -------------------- self-test ------------------------------------------
 
 def _self_test():

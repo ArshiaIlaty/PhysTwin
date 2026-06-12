@@ -74,6 +74,10 @@ class PhysTwinForceEnv:
         force_reward_scale: float = 10000.0,
         max_action_m: float = 0.02,
         base_path: str = "./data/different_types",
+        action_penalty_alpha: float = 0.0,
+        stiffness_normalizer: float = 9.0,
+        overshoot_beta: float = 0.0,
+        v2_policy_dir=None,
     ):
         """
         Args:
@@ -85,6 +89,16 @@ class PhysTwinForceEnv:
           ramp_direction: 'x_axis' or 'recorded_mean'
           force_reward_scale: divisor in reward (units: N)
           max_action_m: |action| clip in meters/frame (safety bound)
+          action_penalty_alpha: Fix G — coefficient for stiffness-scaled action
+              penalty. reward -= alpha * exp(log_spring_Y - C) * ||action_m||^2,
+              where action_m is the *unscaled* action in meters. 0 disables.
+          stiffness_normalizer: Fix G — C in the exponent above. ~9 matches a
+              typical rope's mean log_spring_Y, so rope penalty ≈ alpha*||a||^2,
+              soft cloth gets less, stiff materials get more.
+          overshoot_beta: Fix G — coefficient on the optional overshoot
+              penalty: reward -= beta * sum_g max(0, ||F_achieved_g|| - ||F_goal_g||)^2.
+              Force units are Newtons (no normalization), so beta should be
+              very small (e.g. 1e-9). 0 disables.
         """
         self.case_name = case_name
         self.profile = profile
@@ -94,22 +108,70 @@ class PhysTwinForceEnv:
         self.ramp_direction = ramp_direction
         self.force_reward_scale = force_reward_scale
         self.max_action_m = max_action_m
+        self.action_penalty_alpha = float(action_penalty_alpha)
+        self.stiffness_normalizer = float(stiffness_normalizer)
+        self.overshoot_beta = float(overshoot_beta)
+
+        # Policy v2 mode: obs = flat scaled [past k_past×44 | goal k_goal×6 |
+        # cond 6] assembled like make_policy_callable_v2 in run_closed_loop.py.
+        # The env keeps its own history + prev_action and scales internally
+        # (get_scaled_obs becomes identity), so the PPO loop is unchanged.
+        self.v2 = None
+        if v2_policy_dir is not None:
+            import json as _json
+            import pickle as _pickle
+            from pathlib import Path as _Path
+            v2_dir = _Path(v2_policy_dir)
+            with open(v2_dir / "arch.json") as f:
+                arch = _json.load(f)
+            with open(v2_dir / "scalers_v2.pkl", "rb") as f:
+                scalers = _pickle.load(f)
+            from run_closed_loop import material_vector_for_arch
+            self.v2 = {
+                "arch": arch, "scalers": scalers,
+                "k_past": int(arch["k_past"]), "k_goal": int(arch["k_goal"]),
+                "use_prev_action": bool(arch.get("use_prev_action", True)),
+                "stiff": material_vector_for_arch(arch, case_name),
+                # set per episode in reset() (ramp peak randomizes the goal):
+                "cond_scaled": None,
+            }
+            self.obs_dim = (self.v2["k_past"] * int(arch["frame_dim"])
+                            + self.v2["k_goal"] * int(arch["goal_dim"])
+                            + int(arch["cond_dim"]))
+            self._v2_history = None
+            self._v2_prev_action = None
 
         # Material descriptor: 0-vec (Fix-A baseline), 1-vec (Fix E), 2-vec (Fix F).
         # We infer the right dim from the feat_scaler: 43=no descriptor, 44=Fix E,
         # 45=Fix F. If feat_scaler indicates a descriptor is expected, compute it.
         self.material_descriptor = None
-        self.obs_dim = 43
-        if feat_scaler is not None:
-            md_dim = int(feat_scaler["mean"].shape[0]) - 43
-            if md_dim == 1:
-                from features import get_log_spring_Y_mean
-                self.material_descriptor = np.array(
-                    [get_log_spring_Y_mean(case_name)], dtype=np.float32)
-            elif md_dim == 2:
-                self.material_descriptor = get_material_descriptor(case_name)
-            self.obs_dim = 43 + md_dim
+        if self.v2 is None:
+            self.obs_dim = 43
+            if feat_scaler is not None:
+                md_dim = int(feat_scaler["mean"].shape[0]) - 43
+                if md_dim == 1:
+                    from features import get_log_spring_Y_mean
+                    self.material_descriptor = np.array(
+                        [get_log_spring_Y_mean(case_name)], dtype=np.float32)
+                elif md_dim == 2:
+                    self.material_descriptor = get_material_descriptor(case_name)
+                self.obs_dim = 43 + md_dim
         self.act_dim = 6
+
+        # Fix G: per-case log spring stiffness drives the action-penalty multiplier.
+        # Compute unconditionally so shaping works even without a material descriptor
+        # in the obs (Fix-A / 43-dim baseline). Falls back to the normalizer if the
+        # checkpoint can't be read, which neutralizes the stiffness term.
+        from features import get_log_spring_Y_mean as _get_log_Y  # noqa: E402
+        try:
+            self.log_spring_Y_mean = float(_get_log_Y(case_name))
+        except Exception as e:
+            logger.warning("Fix G: could not read log_spring_Y_mean for %s (%s); "
+                           "using stiffness_normalizer (penalty multiplier=1).",
+                           case_name, e)
+            self.log_spring_Y_mean = float(stiffness_normalizer)
+        self.stiffness_multiplier = float(np.exp(
+            self.log_spring_Y_mean - self.stiffness_normalizer))
 
         # ---------- Trainer setup (one-time, heavy) ----------
         n_ctrl_parts, cfg_type = infer_n_ctrl_parts_and_cfg_type(case_name)
@@ -207,6 +269,18 @@ class PhysTwinForceEnv:
         # Build F_goal for this episode based on profile
         self.F_goal = self._make_goal()
 
+        if self.v2 is not None:
+            from collections import deque
+            from policy_v2 import cmd_scale_from_goal_traj
+            self._v2_history = deque(maxlen=self.v2["k_past"])
+            self._v2_prev_action = np.zeros(6, dtype=np.float32)
+            # cmd_scale is per-episode: the ramp profile randomizes the peak,
+            # and the conditioning must describe THIS episode's command.
+            cs = cmd_scale_from_goal_traj(self.F_goal, self.n_ctrl_parts)
+            sc = self.v2["scalers"]["cond"]
+            cond = np.concatenate([self.v2["stiff"], [cs]]).astype(np.float32)
+            self.v2["cond_scaled"] = ((cond - sc["mean"]) / sc["std"]).astype(np.float32)
+
         # Initialize buffers
         self.positions_buf = np.empty((self.T, self.num_object_points, 3), dtype=np.float32)
         self.controller_buf = np.empty((self.T, self.K, 3), dtype=np.float32)
@@ -243,6 +317,10 @@ class PhysTwinForceEnv:
         # Mask unused groups
         if action_m.shape[0] > self.n_ctrl_parts:
             action_m[self.n_ctrl_parts:] = 0.0
+        # Policy v2: the applied (clipped+masked) action is the next frame's
+        # prev_action input — same convention as make_policy_callable_v2.
+        if self.v2 is not None and self.v2["use_prev_action"]:
+            self._v2_prev_action = action_m.reshape(6).copy()
 
         # Rigid-translate each group
         prev_target = self.curr_target.detach().clone()
@@ -276,8 +354,27 @@ class PhysTwinForceEnv:
 
         # Reward: -‖F_achieved - F_goal[t]‖ / scale, summed over active groups
         goal_t = self.F_goal[t][:self.n_ctrl_parts]   # [n_ctrl, 3]
-        err = np.linalg.norm(force_now - goal_t, axis=-1).sum()
-        reward = float(-err / self.force_reward_scale)
+        err = float(np.linalg.norm(force_now - goal_t, axis=-1).sum())
+        r_force = -err / self.force_reward_scale
+
+        # Fix G: stiffness-scaled action penalty (action in meters, only active
+        # groups). Already masked above, so unused-group rows are zero.
+        r_action = 0.0
+        if self.action_penalty_alpha != 0.0:
+            a_sq = float(np.sum(action_m[:self.n_ctrl_parts] ** 2))
+            r_action = -(self.action_penalty_alpha
+                          * self.stiffness_multiplier * a_sq)
+
+        # Fix G (optional): overshoot penalty — only penalize when achieved
+        # force magnitude exceeds goal magnitude (per group).
+        r_overshoot = 0.0
+        if self.overshoot_beta != 0.0:
+            a_mag = np.linalg.norm(force_now, axis=-1)              # [n_ctrl]
+            g_mag = np.linalg.norm(goal_t, axis=-1)                 # [n_ctrl]
+            excess = np.maximum(0.0, a_mag - g_mag)
+            r_overshoot = -float(self.overshoot_beta * np.sum(excess ** 2))
+
+        reward = float(r_force + r_action + r_overshoot)
 
         self.frame = t
         done = (t >= self.T - 1)
@@ -288,6 +385,11 @@ class PhysTwinForceEnv:
             "ctrl_drift": float(np.linalg.norm(
                 self.controller_buf[t] - self.controller_buf[0], axis=-1
             ).max()),
+            "r_force": float(r_force),
+            "r_action": float(r_action),
+            "r_overshoot": float(r_overshoot),
+            "action_sq_m": float(np.sum(action_m[:self.n_ctrl_parts] ** 2)),
+            "stiffness_mult": float(self.stiffness_multiplier),
         }
         return self._make_obs(), reward, done, info
 
@@ -347,7 +449,7 @@ class PhysTwinForceEnv:
         raise ValueError(f"unknown profile {self.profile}")
 
     def _make_obs(self):
-        """Build the 43-dim observation from current state."""
+        """Build the observation from current state (43-dim, or v2 flat)."""
         positions_so_far = self.positions_buf[:self.frame + 1]
         ctrl_so_far = self.controller_buf[:self.frame + 1]
         feats = compute_31d_features(positions_so_far, ctrl_so_far)
@@ -355,6 +457,10 @@ class PhysTwinForceEnv:
 
         force_now_pad = np.zeros((2, 3), dtype=np.float32)
         force_now_pad[:self.n_ctrl_parts] = self.last_force
+
+        if self.v2 is not None:
+            return self._make_obs_v2(state31, force_now_pad)
+
         next_idx = min(self.frame + 1, self.T - 1)
         force_goal_pad = self.F_goal[next_idx]  # [2, 3]
 
@@ -364,8 +470,40 @@ class PhysTwinForceEnv:
         obs_unscaled = np.concatenate(parts).astype(np.float32)
         return obs_unscaled  # caller applies feat_scaler
 
+    def _make_obs_v2(self, state31, force_now_pad):
+        """Flat SCALED v2 obs [past k×44 | goal k×6 | cond 6].
+
+        Mirrors make_policy_callable_v2: append the current raw frame to the
+        history, repeat-pad the oldest entry (valid=0), preview the commanded
+        goal from frame+1 (driver-call index = frame+1 in training-row terms).
+        """
+        v2 = self.v2
+        frame43 = np.concatenate(
+            [state31, force_now_pad.flatten(), self._v2_prev_action]
+        ).astype(np.float32)
+        self._v2_history.append(frame43)
+
+        rows = list(self._v2_history)
+        n_pad = v2["k_past"] - len(rows)
+        rows = [rows[0]] * n_pad + rows
+        valid = np.array([0.0] * n_pad + [1.0] * len(self._v2_history),
+                         dtype=np.float32)
+        fr = v2["scalers"]["frame"]
+        past = (np.stack(rows) - fr["mean"]) / fr["std"]
+        past = np.concatenate([past, valid[:, None]], axis=1)  # [k_past, 44]
+
+        idx = np.clip(self.frame + 1 + np.arange(v2["k_goal"]), 0, self.T - 1)
+        go = v2["scalers"]["goal"]
+        goal = (self.F_goal[idx].reshape(v2["k_goal"], 6) - go["mean"]) / go["std"]
+
+        return np.concatenate(
+            [past.flatten(), goal.flatten(), v2["cond_scaled"]]
+        ).astype(np.float32)
+
     def get_scaled_obs(self, obs_unscaled):
         """Apply the supervised feature scaler to an observation."""
+        if self.v2 is not None:
+            return obs_unscaled   # v2 obs is emitted already scaled
         if self.feat_scaler is None:
             return obs_unscaled
         return ((obs_unscaled - self.feat_scaler["mean"]) / self.feat_scaler["std"]).astype(np.float32)
@@ -390,7 +528,11 @@ class MultiCasePhysTwinEnv:
                   ramp_scale_range: tuple = (0.6, 1.4),
                   reward_scales: dict = None,
                   max_action_m: float = 0.02,
-                  sample_weights: list = None):
+                  sample_weights: list = None,
+                  action_penalty_alpha: float = 0.0,
+                  stiffness_normalizer: float = 9.0,
+                  overshoot_beta: float = 0.0,
+                  v2_policy_dir=None):
         """
         Args:
           case_specs: list of (case_name, profile) tuples, e.g.
@@ -416,9 +558,14 @@ class MultiCasePhysTwinEnv:
                 ramp_direction=ramp_direction,
                 ramp_scale_range=ramp_scale_range,
                 force_reward_scale=scale, max_action_m=max_action_m,
+                action_penalty_alpha=action_penalty_alpha,
+                stiffness_normalizer=stiffness_normalizer,
+                overshoot_beta=overshoot_beta,
+                v2_policy_dir=v2_policy_dir,
             )
             self.envs.append(env)
-            logger.info("  loaded %s (%s) reward_scale=%.0f", case_name, material, scale)
+            logger.info("  loaded %s (%s) reward_scale=%.0f  stiff_mult=%.3f",
+                        case_name, material, scale, env.stiffness_multiplier)
         self.feat_scaler = feat_scaler
         self.target_scalers = target_scalers
         self.sample_weights = (np.array(sample_weights, dtype=np.float64)

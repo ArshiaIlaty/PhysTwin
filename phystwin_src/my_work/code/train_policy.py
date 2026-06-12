@@ -40,7 +40,8 @@ DEFAULT_OUT = RESULTS / "models_policy"
 
 # ----------------------------- data ---------------------------------------
 
-def load_dataset(npz_path: Path, exclude_materials):
+def load_dataset(npz_path: Path, exclude_materials, use_encoder=False,
+                 zero_force_now=False):
     d = np.load(npz_path, allow_pickle=True)
     R = d["state"].shape[0]
     # Cast string arrays from <U* to plain Python strings for safe equality.
@@ -68,21 +69,40 @@ def load_dataset(npz_path: Path, exclude_materials):
         "motion_type":  motion_type[keep],
         "source":       source[keep],
     }
+    if zero_force_now:
+        # Open-loop ablation: blank the achieved-force feedback channel so the
+        # policy is trained without ever seeing F(t). Zeroing the stored key
+        # propagates to feature cols 31:37 below, keeping the matrix, the
+        # fitted scaler (std -> 1e-6, scaled value 0), and this key consistent.
+        out["force_now"][:] = 0.0
+        logger.info("zero_force_now=True: force_now channel blanked "
+                    "(open-loop ablation)")
     feature_parts = [
         out["state"],
         out["force_now"].reshape(-1, 6),
         out["force_goal"].reshape(-1, 6),
     ]
-    # Fix E/F: optional material descriptor (1 or 2 dim per row)
-    if "material_descriptor" in d.files:
+    if use_encoder:
+        # Fix H: append the raw stiffness vector. The encoder model splits it
+        # back out at base_dim and pushes it through a learned encoder. We also
+        # keep it as a standalone key so model construction can read raw_dim.
+        if "raw_stiffness" not in d.files:
+            raise KeyError("use_encoder set but dataset has no raw_stiffness "
+                           "(rebuild with the updated build_policy_dataset.py)")
+        rs = d["raw_stiffness"][keep].astype(np.float32)
+        out["raw_stiffness"] = rs
+        feature_parts.append(rs)
+    elif "material_descriptor" in d.files:
+        # Fix E/F: optional material descriptor (1 or 2 dim per row)
         md = d["material_descriptor"][keep].astype(np.float32)
         if md.ndim == 1:
             md = md.reshape(-1, 1)
         out["material_descriptor"] = md
         feature_parts.append(md)
     out["features"] = np.concatenate(feature_parts, axis=1).astype(np.float32)
-    # Allow 43 (no descriptor), 44 (Fix E), 45 (Fix F)
-    assert out["features"].shape[1] in (43, 44, 45), out["features"].shape
+    # 43 (no descriptor), 44 (Fix E), 45 (Fix F), 48/49 (Fix H encoder: 43 + 5
+    # stiffness stats, or + 6 with the force-scale leakage ablation).
+    assert out["features"].shape[1] in (43, 44, 45, 48, 49), out["features"].shape
     return out
 
 
@@ -193,6 +213,87 @@ class PolicyMLP(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
+
+class PolicyMLPWithEncoder(nn.Module):
+    """Fix H — learned material encoder.
+
+    Input `x` is the single (already-scaled) feature row laid out as
+    `[base_dim state/force | raw_dim stiffness stats]`. The stiffness tail is
+    pushed through a small encoder to a `latent_dim` embedding, concatenated
+    with the base features, then run through the same 2-hidden-layer head as
+    `PolicyMLP`. The base stream is untouched, so this is a drop-in upgrade of
+    the hand-crafted Fix F descriptor with a learned latent over the full
+    stiffness distribution.
+    """
+
+    def __init__(self, base_dim=43, raw_dim=5, hidden=256, latent_dim=8,
+                 enc_hidden=32, out_dim=6):
+        super().__init__()
+        self.base_dim = int(base_dim)
+        self.raw_dim = int(raw_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(raw_dim, enc_hidden),
+            nn.ReLU(),
+            nn.Linear(enc_hidden, latent_dim),
+        )
+        self.net = nn.Sequential(
+            nn.Linear(base_dim + latent_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, out_dim),
+        )
+
+    def encode(self, x):
+        """Return the latent material embedding for each row (for viz)."""
+        raw = x[:, self.base_dim:self.base_dim + self.raw_dim]
+        return self.encoder(raw)
+
+    def forward(self, x):
+        base = x[:, :self.base_dim]
+        latent = self.encode(x)
+        return self.net(torch.cat([base, latent], dim=1))
+
+
+def build_model(args, in_dim, raw_dim):
+    """Construct the policy network: encoder variant iff --use_encoder and the
+    dataset carries a raw_stiffness tail; otherwise the plain MLP."""
+    if getattr(args, "use_encoder", False) and raw_dim > 0:
+        return PolicyMLPWithEncoder(
+            base_dim=in_dim - raw_dim, raw_dim=raw_dim, hidden=args.hidden,
+            latent_dim=args.latent_dim, enc_hidden=args.enc_hidden, out_dim=6)
+    return PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
+
+
+def raw_dim_of(data):
+    """Width of the raw_stiffness tail in a loaded dataset (0 if absent)."""
+    return data["raw_stiffness"].shape[1] if "raw_stiffness" in data else 0
+
+
+def model_from_state_dict(sd):
+    """Reconstruct the right architecture from a saved state_dict, dims and all.
+
+    The presence of `encoder.*` keys marks the Fix H encoder variant; every
+    dimension is inferred from layer shapes so no metadata file is required."""
+    if any(k.startswith("encoder.") for k in sd):
+        enc_hidden, raw_dim = sd["encoder.0.weight"].shape
+        latent_dim = sd["encoder.2.weight"].shape[0]
+        hidden, head_in = sd["net.0.weight"].shape
+        return PolicyMLPWithEncoder(
+            base_dim=head_in - latent_dim, raw_dim=raw_dim, hidden=hidden,
+            latent_dim=latent_dim, enc_hidden=enc_hidden, out_dim=6)
+    hidden, in_dim = sd["net.0.weight"].shape
+    return PolicyMLP(in_dim=in_dim, hidden=hidden, out_dim=6)
+
+
+def load_policy_model(model_dir):
+    sd = torch.load(Path(model_dir) / "policy.pt", map_location="cpu",
+                    weights_only=True)
+    model = model_from_state_dict(sd)
+    model.load_state_dict(sd)
+    model.eval()
+    return model
 
 
 def masked_mse(pred, target_scaled, mask):
@@ -377,7 +478,8 @@ def to_tensors(split, feat_scaler, target_scalers):
 
 
 def run_check(args):
-    data = load_dataset(args.data, args.exclude_materials)
+    data = load_dataset(args.data, args.exclude_materials, args.use_encoder,
+                        zero_force_now=getattr(args, "zero_force_now", False))
     logger.info("loaded %d rows after exclusions; features=%s",
                 len(data["state"]), data["features"].shape)
     train, val, fs, ts = prepare_split_and_scale(data, args.val_frac, args.seed)
@@ -401,7 +503,8 @@ def run_check(args):
 
 
 def run_overfit(args):
-    data = load_dataset(args.data, args.exclude_materials)
+    data = load_dataset(args.data, args.exclude_materials, args.use_encoder,
+                        zero_force_now=getattr(args, "zero_force_now", False))
     rng = np.random.RandomState(args.seed)
     idx = rng.choice(len(data["state"]), size=100, replace=False)
     tiny = {k: v[idx] for k, v in data.items()}
@@ -415,7 +518,7 @@ def run_overfit(args):
 
     torch.manual_seed(args.seed)
     in_dim = tiny["features"].shape[1]
-    model = PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
+    model = build_model(args, in_dim, raw_dim_of(tiny))
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     final_loss = float("inf")
     for epoch in range(args.epochs):
@@ -446,16 +549,13 @@ def run_inspect(args):
     if args.model_dir is None:
         raise SystemExit("--inspect_only requires --model_dir")
     md = Path(args.model_dir)
-    # Infer in_dim from feat_scaler shape (saves us from sniffing the state_dict)
-    in_dim = int(fs["mean"].shape[0])
-    model = PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
-    model.load_state_dict(torch.load(md / "policy.pt", map_location="cpu",
-                                     weights_only=True))
     with open(md / "feat_scaler.pkl", "rb") as f:
         fs = pickle.load(f)
     with open(md / "target_scalers.pkl", "rb") as f:
         ts = pickle.load(f)
-    data = load_dataset(args.data, args.exclude_materials)
+    model = load_policy_model(md)
+    data = load_dataset(args.data, args.exclude_materials, args.use_encoder,
+                        zero_force_now=getattr(args, "zero_force_now", False))
     # Use the same split as training (read seed from metrics.json if possible).
     seed = args.seed
     try:
@@ -503,17 +603,20 @@ def run_inspect(args):
 
 
 def run_training(args, seeds):
-    data = load_dataset(args.data, args.exclude_materials)
+    data = load_dataset(args.data, args.exclude_materials, args.use_encoder,
+                        zero_force_now=getattr(args, "zero_force_now", False))
     in_dim = data["features"].shape[1]
+    raw_dim = raw_dim_of(data)
     args.out.mkdir(parents=True, exist_ok=True)
     for seed in seeds:
-        logger.info("=== seed %d ===  (in_dim=%d)", seed, in_dim)
+        logger.info("=== seed %d ===  (in_dim=%d, raw_dim=%d, encoder=%s)",
+                    seed, in_dim, raw_dim, bool(args.use_encoder and raw_dim > 0))
         torch.manual_seed(seed)
         np.random.seed(seed)
         train, val, fs, ts = prepare_split_and_scale(data, args.val_frac, seed)
         Xt, Yt, Mt = to_tensors(train, fs, ts)
         Xv, Yv, Mv = to_tensors(val, fs, ts)
-        model = PolicyMLP(in_dim=in_dim, hidden=args.hidden, out_dim=6)
+        model = build_model(args, in_dim, raw_dim)
         model, log, best_val = train_loop(model, (Xt, Yt, Mt), (Xv, Yv, Mv),
                                           args, seed)
         metrics = evaluate_unscaled(model, val, ts, fs)
@@ -556,6 +659,19 @@ def main():
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--hidden", type=int, default=256)
+    p.add_argument("--use_encoder", action="store_true",
+                   help="Fix H: route the raw_stiffness tail through a learned "
+                        "material encoder instead of concatenating a hand-crafted "
+                        "descriptor. Requires a dataset built with raw_stiffness.")
+    p.add_argument("--latent_dim", type=int, default=8,
+                   help="Fix H material-embedding dimension (ablate 4/8/16).")
+    p.add_argument("--enc_hidden", type=int, default=32,
+                   help="Fix H encoder hidden width.")
+    p.add_argument("--zero_force_now", action="store_true",
+                   help="Open-loop ablation: blank the achieved-force feedback "
+                        "channel (force_now, feature cols 31:37) during training "
+                        "so the policy never sees F(t). Eval the resulting model "
+                        "with run_closed_loop.py --open_loop.")
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--val_frac", type=float, default=0.2)
     p.add_argument("--check_only", action="store_true", help="G1")

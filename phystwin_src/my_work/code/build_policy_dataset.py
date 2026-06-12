@@ -86,6 +86,12 @@ def _pad_y_per_ctrl(y: np.ndarray, T: int) -> np.ndarray:
 
 
 _MAT_DESCRIPTOR_CACHE = {}
+_STIFF_STATS_CACHE = {}
+
+# Fix H: whether the per-case raw_stiffness vector appends the demo force
+# scale. False for the headline (stiffness-only, leakage-free) encoder; set
+# True only to build the explicit leakage-ablation dataset.
+INCLUDE_FORCE_SCALE = False
 
 
 def _get_material_descriptor(case_name: str, source: str) -> np.ndarray:
@@ -101,6 +107,46 @@ def _get_material_descriptor(case_name: str, source: str) -> np.ndarray:
         val = np.zeros(2, dtype=np.float32)
     _MAT_DESCRIPTOR_CACHE[case_name] = val
     _MAT_DESCRIPTOR_CACHE[donor] = val
+    return val
+
+
+def _get_stiffness_stats(case_name: str, source: str) -> np.ndarray:
+    """Fix H per-case stiffness-distribution vector (encoder input). Cached.
+
+    Stiffness-only by default; appends demo force scale iff INCLUDE_FORCE_SCALE
+    (leakage ablation). Same donor-name handling as the descriptor: synthetic
+    trajectories inherit the stiffness of the real case they were derived from.
+    """
+    key = (case_name, INCLUDE_FORCE_SCALE)
+    if key in _STIFF_STATS_CACHE:
+        return _STIFF_STATS_CACHE[key]
+    donor = case_name.split("__synth_")[0] if source == "synth" else case_name
+    from features import get_stiffness_stats, STIFFNESS_STATS_DIM, STIFFNESS_STATS_DIM_WITH_FORCE
+    try:
+        val = get_stiffness_stats(donor, include_force_scale=INCLUDE_FORCE_SCALE)
+    except Exception as e:
+        dim = STIFFNESS_STATS_DIM_WITH_FORCE if INCLUDE_FORCE_SCALE else STIFFNESS_STATS_DIM
+        logger.warning("stiffness_stats failed for %s: %s; using zeros", donor, e)
+        val = np.zeros(dim, dtype=np.float32)
+    _STIFF_STATS_CACHE[key] = val
+    return val
+
+
+_MATERIAL_STATS_CACHE = {}
+
+
+def _get_material_stats(case_name: str, source: str) -> np.ndarray:
+    """Fix K per-case 11-D enriched material vector. Cached, donor-aware."""
+    if case_name in _MATERIAL_STATS_CACHE:
+        return _MATERIAL_STATS_CACHE[case_name]
+    donor = case_name.split("__synth_")[0] if source == "synth" else case_name
+    from features import get_material_stats, MATERIAL_STATS_DIM
+    try:
+        val = get_material_stats(donor)
+    except Exception as e:
+        logger.warning("material_stats failed for %s: %s; using zeros", donor, e)
+        val = np.zeros(MATERIAL_STATS_DIM, dtype=np.float32)
+    _MATERIAL_STATS_CACHE[case_name] = val
     return val
 
 
@@ -144,8 +190,11 @@ def trajectory_to_rows(traj: dict, k_lookaheads=(1,)):
     # Per-frame next-step action (same for all k).
     next_action_all = (centroids[1:] - centroids[:-1]).astype(np.float32)  # [T-1, 2, 3]
 
-    # Material descriptor — constant per-case, broadcast to all rows.
+    # Material descriptor (Fix F) + stiffness stats (Fix H) — both per-case
+    # constants, broadcast to all rows.
     mat_desc = _get_material_descriptor(traj["case_name"], traj["source"])
+    stiff_stats = _get_stiffness_stats(traj["case_name"], traj["source"])
+    material_stats = _get_material_stats(traj["case_name"], traj["source"])
 
     per_k = []
     for k in k_lookaheads:
@@ -171,6 +220,13 @@ def trajectory_to_rows(traj: dict, k_lookaheads=(1,)):
             "motion_type":  np.array([traj["motion_type"]] * T_rows, dtype="<U16"),
             "k_lookahead":  np.full(T_rows, k, dtype=np.int8),
             "material_descriptor": np.tile(mat_desc[None, :], (T_rows, 1)).astype(np.float32),
+            "raw_stiffness": np.tile(stiff_stats[None, :], (T_rows, 1)).astype(np.float32),
+            # Fix K: enriched 11-D material vector (obj/ctrl-spring stiffness
+            # split + calibrated collision elasticity/friction).
+            "raw_material": np.tile(material_stats[None, :], (T_rows, 1)).astype(np.float32),
+            # Policy v2: explicit time index of the row within its trajectory,
+            # so sequence-window assembly never has to trust row ordering.
+            "frame_idx":    np.arange(T_rows, dtype=np.int32),
         }
         per_k.append(rows_k)
 
@@ -251,12 +307,26 @@ def validate(combined: dict, per_traj_meta: list) -> dict:
             warnings_list.append(msg)
 
     # 6. no NaN / Inf (hard)
-    for field in ("state", "force_now", "force_goal", "action"):
+    nan_fields = ["state", "force_now", "force_goal", "action"]
+    if "raw_stiffness" in combined:
+        nan_fields.append("raw_stiffness")
+    for field in nan_fields:
         arr = combined[field]
         n_bad = int(np.sum(~np.isfinite(arr)))
         if n_bad:
             raise AssertionError(f"NaN/Inf in {field}: {n_bad} entries")
     summary["nan_inf_check"] = "passed"
+
+    # 6b. Fix H: raw_stiffness must be constant within each case (per-case
+    # property, no temporal/per-row variation).
+    if "raw_stiffness" in combined:
+        rs = combined["raw_stiffness"]
+        summary["raw_stiffness_dim"] = int(rs.shape[1])
+        for case in np.unique(combined["case_name"]):
+            block = rs[combined["case_name"] == case]
+            if not np.allclose(block, block[0:1]):
+                raise AssertionError(f"raw_stiffness varies within case {case}")
+        summary["raw_stiffness_const_per_case"] = "passed"
 
     # 7. mask coverage exact match (hard)
     rows_with_g1 = int((combined["action_mask"][:, 1] == 1.0).sum())
@@ -301,8 +371,16 @@ def main():
                              "the original Step 1 dataset. Pass e.g. "
                              "`--k_lookaheads 1 5 10 20` for the Fix B "
                              "hindsight-augmented dataset.")
+    parser.add_argument("--stiffness_force_scale", action="store_true",
+                        help="Fix H leakage ablation: append demo log_mean_force "
+                             "to the raw_stiffness vector. OFF by default (the "
+                             "headline encoder is stiffness-only, no leakage).")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    # Fix H: propagate the leakage-ablation flag to the cached helper.
+    global INCLUDE_FORCE_SCALE
+    INCLUDE_FORCE_SCALE = args.stiffness_force_scale
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

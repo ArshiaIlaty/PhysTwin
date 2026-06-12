@@ -239,7 +239,7 @@ real, especially on rope. State-distribution-shift diagnosis validated.
 - [x] [rl_fixF_review.md](rl_fixF_review.md) written.
 - [x] 4 demo videos rendered (rope replay/ramp, cloth replay, sloth replay).
 
-### Fix G — Stiffness-shaped RL reward (next experiment)
+### Fix G — Stiffness-shaped RL reward (in progress 2026-05-26)
 
 User-proposed: penalize aggressive actions more heavily on stiff materials,
 less on compliant ones. Should fix the sloth-ramp regression where
@@ -264,17 +264,31 @@ Multiplier scaling:
 - Stiff sloth (log=10.5): e^1.5 = 4.5× penalty
 
 Implementation:
-- [ ] Modify `PhysTwinForceEnv.step()` reward computation to include
-      stiffness-scaled action penalty.
-- [ ] Pass `log_spring_Y` from env init → reward fn (already available
-      via self.material_descriptor).
-- [ ] Add CLI args `--action_penalty_alpha`, `--stiffness_normalizer`,
-      and `--overshoot_beta`.
-- [ ] Smoke test with small α to confirm reward components are visible
-      but don't dominate (~1 hr).
-- [ ] Train 50K steps with shaped reward from Fix F BC warm-start
-      (~3 hr compute).
-- [ ] Eval on full 14-case sweep.
+- [x] Modify `PhysTwinForceEnv.step()` reward computation to include
+      stiffness-scaled action penalty + optional overshoot penalty.
+      Action used in penalty is *unscaled meters* (matches user's table
+      intuition); stiffness multiplier from per-case `log_spring_Y_mean`
+      (computed unconditionally in __init__, independent of obs-side
+      material descriptor). Returns r_force/r_action/r_overshoot in info.
+- [x] Pass `log_spring_Y_mean` from env init → reward fn (per-case constant,
+      cached at construction).
+- [x] Add CLI args `--action_penalty_alpha`, `--stiffness_normalizer`,
+      and `--overshoot_beta` to `rl_ppo.py`. Forwarded to single + multi env.
+      `rl_ppo.py` now logs `rc_force/rc_action/rc_overshoot` per update.
+- [x] Smoke 52706740 at α=1.0 (default per user spec): r_action ≈ 5e-5,
+      r_force ≈ -0.6 → ratio 1e-4 (inert, plumbing OK).
+- [x] Smoke 52709876 at α=1000: r_action / r_force ≈ 3-7% (visible
+      but not dominant), KL bounded, release_frac ≈ 0.5, no collapse.
+      Action measured in *unscaled meters*, so default α=1.0 was too
+      small by 4 OOM; α=1000 hits the sweet spot.
+- [x] Full training 52714610 done (51.2K steps, 3h14m, best return -60.15,
+      final release 0.80 — release ↑ vs Fix F's 0.62, return tied).
+- [x] Eval 52738476 done — 14 cases, 0 NaN, 13 min.
+- [x] Compared to RL-FF-Multi: see [fix_g_review.md](fix_g_review.md).
+      Cloth ramp 2.31 → 2.13 (−8%, design target validated). Cloth
+      replay 0.37 → 0.34. **But** rope replay regressed 0.41 → 0.49,
+      sloth ramp regressed 2.66 → 2.77. Net: not a clear win over RL-FF-Multi.
+- [ ] Eval on full 14-case sweep (via `rl_eval.py`).
 - [ ] Compare to RL-FF-Multi specifically on sloth ramp + cloth ramp.
 
 Expected outcomes:
@@ -285,7 +299,140 @@ Expected outcomes:
 
 Cost: ~1 hr code + ~3 hr compute.
 
+### Fix H — Learned material encoder + leakage audit ✅ done 2026-06-10
+
+User/professor-proposed: replace the hand-crafted material descriptor with a
+*learned encoder* for the material (latent embedding of stiffness).
+
+- [x] `features.get_stiffness_stats` — per-case `log(spring_Y)` distribution
+      `[mean, std, q10, q50, q90]` (stiffness-only; `include_force_scale` for
+      the leakage ablation).
+- [x] `build_policy_dataset.py` emits `raw_stiffness` + `--stiffness_force_scale`;
+      built `policy_dataset_fixH.npz` (33,355 rows) and `_fixH_force.npz`.
+- [x] `train_policy.PolicyMLPWithEncoder` + `--use_encoder/--latent_dim`;
+      state-dict-sniffing loader (`model_from_state_dict`). G1+G2 PASS,
+      held-out vec_R² matches Fix F.
+- [x] `run_closed_loop.py`: encoder-aware `load_policy_artifacts` +
+      `descriptor_for_case` (dim-dispatch 1/2/5/6). Backward-compatible.
+- [x] Trained hidden=512, latent {4,8,16}, + force-scale ablation.
+- [x] 14-case sweep eval: `eval_closed_loop_fixH{,_force}/`.
+- [x] [fix_h_review.md](fix_h_review.md) + figure
+      `presentation_results/figures/06_material_encoder.png`.
+
+**Result (honest/negative-but-informative):** stiffness-only encoder
+*underperforms* Fix F on the sweep, but the same encoder **+force-scale
+reproduces Fix F almost exactly** (cloth replay 0.375 vs 0.371, rope 0.464 vs
+0.459). So the encoder architecture is sound, and the prior "material
+conditioning" replay gains were **substantially demo-force leakage**
+(`single_push_rope_4` 0.77→2.36 without it; `single_lift_cloth` 0.38→55.9).
+This quantifies the professor's "is this cheating looking at mean force?"
+concern. **Decision: do NOT carry Fix H into RL** (A6 gate: wins only 1/6
+combos). RL-FF-Multi stays the headline policy; Fix F numbers reported with
+the leakage caveat.
+
+### Policy v2 / Fix I — Transformer + history + goal preview (2026-06-10)
+
+Full redesign per user direction after Fix H. Design:
+[policy_v2_plan.md](policy_v2_plan.md). Architecture: 12-token transformer
+(8 past frames + 4 commanded-goal preview frames), FiLM conditioning from
+[stiffness encoder latent | cmd_scale], 411K params. cmd_scale = log mean
+‖F*_commanded‖ — the honest replacement for Fix F's leaky force scale
+(identical numerically on replay, derived from the command).
+
+- [x] `build_policy_dataset.py` + `frame_idx`; built `policy_dataset_fixI.npz`
+      (33,355 rows).
+- [x] `policy_v2.py` (model + window assembly + arch.json). G1 self-test PASS
+      (no cross-trajectory windows, preview/prev_action/padding asserts).
+- [x] `train_policy_v2.py`. G2 overfit PASS (1.9e-5). G3 seed-1 PASS —
+      val vec_R² sloth 0.92/0.96 (MLP: 0.60), rope 0.94/0.95, cloth 0.62/0.97
+      (caveat: prev_action makes one-step val easier; sweep decides).
+- [x] `run_closed_loop.py`: arch.json-aware loader + `make_policy_callable_v2`
+      (closure keeps its own history; trainer_warp untouched). Backward
+      compat verified (Fix F/H still load identically).
+- [x] G4 single-case smoke: single_push_rope_1 replay **0.222**
+      (Fix F 0.375, RL-FF-Multi 0.182).
+- [x] G5 full 14-case sweep → `eval_closed_loop_v2/`.
+- [x] [policy_v2_review.md](policy_v2_review.md) with comparison table +
+      RL-gate verdict.
+
+**v2 clean result:** best honest BC on rope replay (0.421 ≈ RL 0.410),
+cmd_scale validated (rope_4 recovered 2.36 → 0.79), but OOD ramps
+catastrophic (sloth 29.5) — prev_action feedback loop (exposure bias).
+
+### Policy v2.1 — prev_action noise + ablation ✅ RL GATE TRIGGERED 2026-06-10
+- [x] `--prev_noise σ` (DART-style noise on prev_action columns) and
+      `--drop_prev_action` (ablation) in train_policy_v2.py; rollout closure
+      mirrors regime via arch.json `use_prev_action`.
+- [x] Trained + swept both. **v2-noise (σ=0.3): cloth replay 0.305, rope
+      replay 0.391 — project-best, beat RL-FF-Multi.** Sloth ramp 29.5→2.25.
+      **v2-noprev: sloth ramp 1.724 (ties all-time best), confirms the
+      exposure-bias attribution** (ramps recover when prev_action removed).
+- [x] Both variants win 3/6 groups vs RL-FF-Multi → **RL fine-tune gate
+      TRIGGERED**. See [policy_v2_review.md](policy_v2_review.md) addendum.
+- [x] RL v2 plumbing: `rl_env.py` v2 obs mode (flat scaled
+      [past 8×44 | goal 4×6 | cond 6] = 382-dim; per-episode cmd_scale since
+      ramp peaks randomize; prev_action = applied clipped+masked action),
+      `rl_ppo.py` ActorV2 (transformer + log_std, warm-start via
+      `model.load_state_dict`), `rl_eval.py` v2 extraction (strips `model.`
+      prefix, copies arch.json + scalers_v2.pkl).
+- [x] Smoke (4K steps, single rope ramp): obs 382 ✓, 411K params loaded ✓,
+      KL bounded, v_loss 1.79→0.73, **release 0.83 out of the box from the
+      BC warm-start** (old BC: 0.04). `rl_runs/v2_smoke/`.
+- [x] Full 50K-step training (job 53017394, 3h13m): stable, KL-throttled to
+      1 epoch/update, return never beat the frozen-warmup baseline.
+- [x] Eval sweep: **best.pt ≡ v2-noise BC to 3 decimals on all 6 groups.**
+      PPO fine-tuning added nothing over the strong BC warm-start
+      (conservative KL = anchored; aggressive KL = collapse per G3 lesson).
+      → **BC is the backbone going forward**; RL kept for the
+      student-forcing narrative + last-resort OOD attack.
+      See policy_v2_review.md ADDENDUM 2.
+
+### Fix K — enriched material encoder + adapter token (2026-06-10, in progress)
+User/professor direction: "maybe missing an important descriptive input" +
+"VLA-adapter-style injection". Implemented:
+- [x] `features.get_material_stats` — 11-D per-case vector: OBJECT-spring
+      log-Y stats (5) + **CONTROL-spring log-Y mean/std** (the
+      gripper→force gain, previously pooled away!) + calibrated
+      collide_elas/fric + collide_object_elas/fric (never used before).
+- [x] `build_policy_dataset.py` emits `raw_material`; built
+      `policy_dataset_fixK.npz`.
+- [x] `policy_v2.py`: arch-driven stiff_dim + **material token**
+      (adapter-style injection: the conditioning latent enters the sequence
+      as a 13th token, alongside FiLM). `--material_stats` in
+      train_policy_v2.py; arch-dispatch in rollout closure + rl_env
+      (`material_vector_for_arch`).
+- [x] G2 PASS (1.1e-5). Trained (val 0.197 ≈ v2-noise's 0.194).
+- [x] 14-case sweep → `eval_closed_loop_v2_fixK/`. **NEGATIVE: loses 6/6
+      groups vs v2-noise** (cloth ramp 3.95 → 6.10, rope replay 0.391 →
+      0.464, sloth replay 0.719 → 0.829). Equal val loss, worse closed-loop
+      — same val≠deployment pattern as Fix B/G.
+- [x] Decomposition ablations: **token = harmful** (5D+token sloth ramp
+      8.35; constant per-case attention anchor → case-identity keying);
+      **11-D input via FiLM = ramp WIN**: sloth ramp **1.382 all-time
+      best**, rope ramp 0.544 ≈ RL, cloth ramp 3.76; mild replay cost vs
+      5-D. The "missing descriptive input" instinct was right — through
+      FiLM, not a token. policy_v2_review.md ADDENDUM 4.
+      BC frontier now beats/ties RL everywhere except cloth ramp (2.31 RL
+      vs 3.76 BC).
+
+### Fix L — restore quarantined cloth ramp_full data (2026-06-11, running)
+The last RL edge is cloth ramp. The 46 cloth ramp_full synthetic
+trajectories quarantined at Fix D (hurt the MLP) may be digestible by the
+v2 transformer + noise.
+- [x] Merged synth dir (symlinks) → `policy_dataset_fixL.npz`.
+- [x] Trained 11D-FiLM σ=0.3 → `models_policy_v2_fixL`; swept.
+- [x] **PARTIAL**: cloth ramp 3.76 → 3.16 (right direction, RL still 2.31),
+      replay recovered (cloth 0.329 / rope 0.395), **but rope ramp 0.544 →
+      1.19** — the Fix D shared-capacity trade-off reproduced on the
+      transformer. Verdict + final frontier in policy_v2_review.md
+      ADDENDUM 5 / FINAL STATE: v2-noise = replay default, fixK-film =
+      ramp specialist, RL keeps only cloth ramp. Next leverage: per-material
+      heads / data weighting, MPC oracle, leave-one-case-out eval.
+
 ### Deferred further
+- [ ] Leakage-free force-scale signal (commanded peak budget, not recorded
+      trace) — would give the policy task-scale honestly. Promising follow-up.
+      → implemented in Policy v2 as cmd_scale (see above).
 - [ ] MPC over the simulator (principled fix for release — bigger
       project, after goal-side fixes ruled out).
 - [ ] RL fine-tuning from BC warm-start (alternative to MPC).
