@@ -444,13 +444,13 @@
   </ol>
 
   <figure class="figure">
-    <img src="assets/malak/figures/12_generalization_splits.png" alt="The three generalization splits">
+    <img src="assets/force_control/figures/12_generalization_splits.png" alt="The three generalization splits">
     <p class="caption">The three nested generalization splits, from weakest to strongest.</p>
   </figure>
 
   <h3>The data</h3>
   <figure class="figure">
-    <img src="assets/malak/figures/11a_force_traces.png" alt="Recorded force over time for each material">
+    <img src="assets/force_control/figures/11a_force_traces.png" alt="Recorded force over time for each material">
     <p class="caption">
       Recorded force traces by material. Every training label lies on one of these curves.
     </p>
@@ -476,7 +476,7 @@
   </p>
 
   <figure class="figure" style="max-width:620px;margin-left:auto;margin-right:auto;">
-    <img src="assets/malak/figures/11b_stiffness_force_map.png" alt="Per-case stiffness vs force scale map">
+    <img src="assets/force_control/figures/11b_stiffness_force_map.png" alt="Per-case stiffness vs force scale map">
     <p class="caption">
       Descriptor space: each case is placed by stiffness and mean episode force.
     </p>
@@ -732,14 +732,14 @@
   </p>
 
   <figure class="figure">
-    <img src="assets/malak/figures/00_closed_loop_diagram.png" alt="Closed-loop force tracking: policy, action, simulator, force feedback" width="760">
+    <img src="assets/force_control/figures/00_closed_loop_diagram.png" alt="Closed-loop force tracking: policy, action, simulator, force feedback" width="760">
     <p class="caption">
       Closed-loop force tracking. Removing the red feedback arrow gives the open-loop policy.
     </p>
   </figure>
 
   <figure class="figure">
-    <img src="assets/malak/figures/00_observation_breakdown.png" alt="Policy observation breakdown">
+    <img src="assets/force_control/figures/00_observation_breakdown.png" alt="Policy observation breakdown">
     <p class="caption">
       Per-frame policy observation. Achieved force is the closed-loop addition; open-loop observes
       everything else.
@@ -776,7 +776,7 @@
   <div class="video-stack">
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/videos/06_BC_cloth_lift_BEST.mp4" type="video/mp4">
+        <source src="assets/force_control/videos/06_BC_cloth_lift_BEST.mp4" type="video/mp4">
       </video>
       <p class="caption">
         <strong>BC, best case:</strong> double_lift_cloth_1, err_ratio 0.22. The colored arrow is
@@ -786,7 +786,7 @@
 
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/videos/02_BC_cloth_ramp_FAILURE.mp4" type="video/mp4">
+        <source src="assets/force_control/videos/02_BC_cloth_ramp_FAILURE.mp4" type="video/mp4">
       </video>
       <p class="caption">
         <strong>BC, ramp failure:</strong> on a synthetic ramp goal, BC fails to retract as the
@@ -804,7 +804,7 @@
   </p>
 
   <figure class="figure">
-    <img src="assets/malak/figures/00_release_problem_real.png" alt="Measured BC vs RL force traces on a cloth ramp rollout">
+    <img src="assets/force_control/figures/00_release_problem_real.png" alt="Measured BC vs RL force traces on a cloth ramp rollout">
     <p class="caption">
       On double_lift_cloth_3, BC keeps adding force after the ramp peak, reaching 27.8 kN against a
       5.5 kN goal peak. RL retracts and stays near the target.
@@ -814,7 +814,7 @@
   <div class="video-stack">
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/videos/01_RL_rope_ramp_HEADLINE.mp4" type="video/mp4">
+        <source src="assets/force_control/videos/01_RL_rope_ramp_HEADLINE.mp4" type="video/mp4">
       </video>
       <p class="caption">
         <strong>RL retracting in a live rollout:</strong> on a rope ramp, RL reaches release
@@ -1017,14 +1017,14 @@
 
   <div class="figure-stack">
     <figure class="figure">
-      <img src="assets/malak/open_vs_closed/01_open_vs_closed_bars.png" alt="Open vs closed loop bar chart">
+      <img src="assets/force_control/open_vs_closed/01_open_vs_closed_bars.png" alt="Open vs closed loop bar chart">
       <p class="caption">
         Open-loop and closed-loop err_ratio. The gap is small on replay and larger on ramps.
       </p>
     </figure>
 
     <figure class="figure">
-      <img src="assets/malak/open_vs_closed/02_tracking_overlays.png" alt="Force tracking overlays open vs closed">
+      <img src="assets/force_control/open_vs_closed/02_tracking_overlays.png" alt="Force tracking overlays open vs closed">
       <p class="caption">
         Achieved vs target force. Open-loop diverges on the ramp, while closed-loop partially
         corrects.
@@ -1038,42 +1038,42 @@
   <div class="video-stack">
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/open_vs_closed/videos/single_push_rope_1__policy_recorded_goal__closed.mp4" type="video/mp4">
+        <source src="assets/force_control/open_vs_closed/videos/single_push_rope_1__policy_recorded_goal__closed.mp4" type="video/mp4">
       </video>
       <p class="caption">Rope replay: closed-loop policy.</p>
     </figure>
 
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/open_vs_closed/videos/single_push_rope_1__policy_recorded_goal__open.mp4" type="video/mp4">
+        <source src="assets/force_control/open_vs_closed/videos/single_push_rope_1__policy_recorded_goal__open.mp4" type="video/mp4">
       </video>
       <p class="caption">Rope replay: open-loop policy. Performance is similar on familiar goals.</p>
     </figure>
 
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/open_vs_closed/videos/single_push_rope_1__policy_ramp__closed.mp4" type="video/mp4">
+        <source src="assets/force_control/open_vs_closed/videos/single_push_rope_1__policy_ramp__closed.mp4" type="video/mp4">
       </video>
       <p class="caption">Rope ramp: closed-loop policy partially tracks the new goal.</p>
     </figure>
 
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/open_vs_closed/videos/single_push_rope_1__policy_ramp__open.mp4" type="video/mp4">
+        <source src="assets/force_control/open_vs_closed/videos/single_push_rope_1__policy_ramp__open.mp4" type="video/mp4">
       </video>
       <p class="caption">Rope ramp: open-loop policy cannot adapt without feedback.</p>
     </figure>
 
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/open_vs_closed/videos/double_lift_cloth_3__policy_ramp__closed.mp4" type="video/mp4">
+        <source src="assets/force_control/open_vs_closed/videos/double_lift_cloth_3__policy_ramp__closed.mp4" type="video/mp4">
       </video>
       <p class="caption">Cloth ramp: closed-loop policy.</p>
     </figure>
 
     <figure>
       <video autoplay muted loop playsinline>
-        <source src="assets/malak/open_vs_closed/videos/double_lift_cloth_3__policy_ramp__open.mp4" type="video/mp4">
+        <source src="assets/force_control/open_vs_closed/videos/double_lift_cloth_3__policy_ramp__open.mp4" type="video/mp4">
       </video>
       <p class="caption">Cloth ramp: open-loop policy overshoots and remains high.</p>
     </figure>
@@ -1190,16 +1190,9 @@
         <p class="caption">BC on rope replay: reasonable tracking.</p>
       </figure>
       <figure>
-<<<<<<< HEAD
-        <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/11_BC_rope_ramp.mp4" type="video/mp4">
-        </video>
-        <p class="caption">BC on rope ramp: the policy stalls instead of retracting.</p>
-=======
         <video autoplay muted loop playsinline src="assets/force_control/videos/11_BC_rope_ramp.mp4">
     </video>
         <p class="caption">BC on rope ramp: the policy stalls and never retracts (release fraction 0.04).</p>
->>>>>>> arshia/main
       </figure>
     </div>
   </div>
@@ -1217,20 +1210,20 @@
     <div class="video-stack">
       <figure>
         <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/01_RL_rope_ramp_HEADLINE.mp4" type="video/mp4">
+          <source src="assets/force_control/videos/01_RL_rope_ramp_HEADLINE.mp4" type="video/mp4">
         </video>
         <p class="caption"><strong>RL on rope ramp:</strong> the policy releases correctly.</p>
       </figure>
       <figure>
         <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/RL_FFMulti_rope_replay.mp4" type="video/mp4">
+          <source src="assets/force_control/videos/RL_FFMulti_rope_replay.mp4" type="video/mp4">
         </video>
         <p class="caption">RL on rope replay.</p>
       </figure>
     </div>
 
     <figure class="figure">
-      <img src="assets/malak/figures/01_per_material_bars.png" alt="RL vs BC per-material err_ratio">
+      <img src="assets/force_control/figures/01_per_material_bars.png" alt="RL vs BC per-material err_ratio">
       <p class="caption">
         RL mainly improves ramp tests, where BC fails to retract.
       </p>
@@ -1251,13 +1244,13 @@
     <div class="video-stack">
       <figure>
         <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/10_BCdesc_rope_replay.mp4" type="video/mp4">
+          <source src="assets/force_control/videos/10_BCdesc_rope_replay.mp4" type="video/mp4">
         </video>
         <p class="caption">2D descriptor on rope replay: 0.46 versus 0.75 without it.</p>
       </figure>
       <figure>
         <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/08_BCdesc_rope_ramp.mp4" type="video/mp4">
+          <source src="assets/force_control/videos/08_BCdesc_rope_ramp.mp4" type="video/mp4">
         </video>
         <p class="caption">2D descriptor on rope ramp: retraction remains difficult.</p>
       </figure>
@@ -1284,7 +1277,7 @@
     </figure>
 
     <figure class="figure">
-      <img src="assets/malak/figures/03_force_tracking_grid.png" alt="Force tracking grid across materials and modes">
+      <img src="assets/force_control/figures/03_force_tracking_grid.png" alt="Force tracking grid across materials and modes">
       <p class="caption">
         The noise-injected transformer gives the best replay tracking of any policy.
       </p>
@@ -1303,33 +1296,12 @@
     </p>
 
     <figure class="figure">
-<<<<<<< HEAD
-      <img src="assets/malak/figures/05_highlight_cloth.png" alt="Cloth results across policy variants">
-      <p class="caption">
-        FiLM improves ramp performance without degrading replay.
-      </p>
-=======
       <img src="assets/force_control/figures/05_highlight_cloth.png" alt="Cloth results across policy variants">
       <p class="caption">Cloth results across policy variants. FiLM with the enriched descriptor improves ramp performance without degrading replay.</p>
->>>>>>> arshia/main
     </figure>
 
     <div class="video-stack">
       <figure>
-<<<<<<< HEAD
-        <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/FiLM_sloth_ramp.mp4" type="video/mp4">
-        </video>
-        <p class="caption">
-          <strong>FiLM on sloth ramp:</strong> err_ratio 1.38, the best out-of-distribution result.
-        </p>
-      </figure>
-      <figure>
-        <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/RL_FFMulti_sloth_replay.mp4" type="video/mp4">
-        </video>
-        <p class="caption">RL on sloth replay for comparison.</p>
-=======
         <video autoplay muted loop playsinline src="assets/force_control/videos/FiLM_sloth_ramp.mp4">
     </video>
         <p class="caption"><strong>FiLM 11D on double_stretch_sloth ramp</strong>, err_ratio 1.38, the project's best out-of-distribution result. The policy tracks the ascending ramp and releases on the descent, unlike BC.</p>
@@ -1338,7 +1310,6 @@
         <video autoplay muted loop playsinline src="assets/force_control/videos/RL_FFMulti_sloth_replay.mp4">
     </video>
         <p class="caption">RL on sloth replay (err_ratio 0.66) for comparison. RL remains stronger on replay; FiLM is stronger on this ramp.</p>
->>>>>>> arshia/main
       </figure>
     </div>
   </div>
@@ -1395,12 +1366,7 @@
         The deployable ensemble tracks the oracle closely across groups.
       </p>
     </figure>
-<<<<<<< HEAD
-
-    <div class="table-scroll card malak">
-=======
     <div class="table-scroll card control">
->>>>>>> arshia/main
       <table>
         <thead>
           <tr><th>Group</th><th>Best single policy</th><th>Ensemble</th><th>Oracle</th></tr>
@@ -1482,16 +1448,9 @@
       <p class="caption">RL on cloth replay.</p>
     </figure>
     <figure>
-<<<<<<< HEAD
-      <video autoplay muted loop playsinline>
-        <source src="assets/malak/videos/RL_FFMulti_rope_ramp.mp4" type="video/mp4">
-      </video>
-      <p class="caption">RL on rope ramp.</p>
-=======
       <video autoplay muted loop playsinline src="assets/force_control/videos/RL_FFMulti_rope_ramp.mp4">
     </video>
       <p class="caption">RL on rope ramp, its strongest ramp result.</p>
->>>>>>> arshia/main
     </figure>
     <figure>
       <video autoplay muted loop playsinline src="assets/force_control/videos/RL_FFMulti_sloth_replay.mp4">
@@ -1501,16 +1460,8 @@
   </div>
 
   <figure class="figure">
-<<<<<<< HEAD
-    <img src="assets/malak/figures/04_limitations_panel.png" alt="Limitations panel">
-    <p class="caption">
-      Failure cases. Cloth ramp remains the hardest: policies reduce force on the descent but
-      still overshoot.
-    </p>
-=======
     <img src="assets/force_control/figures/04_limitations_panel.png" alt="Limitations panel">
     <p class="caption">Failure cases. Cloth ramp remains the hardest: the policy reduces force on the descending ramp but consistently overshoots it.</p>
->>>>>>> arshia/main
   </figure>
 </section>
 
@@ -1568,12 +1519,7 @@
       test time. Transfer is partial: gentle lifting remains controlled, while aggressive stretching
       breaks down.
     </p>
-<<<<<<< HEAD
-
-    <div class="table-scroll card malak">
-=======
     <div class="table-scroll card control">
->>>>>>> arshia/main
       <table>
         <thead>
           <tr><th>Sloth case</th><th>Trained with sloth</th><th>Sloth held out</th></tr>
@@ -1589,11 +1535,7 @@
     </div>
 
     <figure class="figure">
-<<<<<<< HEAD
-      <img src="assets/malak/figures/10_loso_sloth.png" alt="Held-out material generalization on sloth">
-=======
       <img src="assets/force_control/figures/10_loso_sloth.png" alt="Held-out material generalization (sloth)">
->>>>>>> arshia/main
       <p class="caption">
         Holding out sloth preserves control on the gentle lift but fails on aggressive stretches.
       </p>
@@ -1601,33 +1543,15 @@
 
     <div class="video-stack">
       <figure>
-<<<<<<< HEAD
-        <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/LOSO_single_lift_sloth.mp4" type="video/mp4">
-        </video>
-        <p class="caption">
-          <strong>Held-out success:</strong> single_lift_sloth replay, err_ratio 0.47.
-        </p>
-=======
         <video autoplay muted loop playsinline src="assets/force_control/videos/LOSO_single_lift_sloth.mp4">
     </video>
         <p class="caption"><strong>Held-out success:</strong> single_lift_sloth replay, err_ratio 0.47. The policy has never seen a sloth, yet tracks the lift using the stiffness descriptor.</p>
->>>>>>> arshia/main
       </figure>
 
       <figure>
-<<<<<<< HEAD
-        <video autoplay muted loop playsinline>
-          <source src="assets/malak/videos/LOSO_double_stretch_sloth_ramp.mp4" type="video/mp4">
-        </video>
-        <p class="caption">
-          <strong>Held-out failure:</strong> double_stretch_sloth ramp, err_ratio 3.57.
-        </p>
-=======
         <video autoplay muted loop playsinline src="assets/force_control/videos/LOSO_double_stretch_sloth_ramp.mp4">
     </video>
         <p class="caption"><strong>Held-out failure mode:</strong> double_stretch_sloth ramp, err_ratio 3.57. On the most aggressive maneuver, extrapolation from rope and cloth breaks down.</p>
->>>>>>> arshia/main
       </figure>
     </div>
 
