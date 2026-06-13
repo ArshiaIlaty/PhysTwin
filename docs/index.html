@@ -318,12 +318,6 @@
     </table>
   </div>
 
-  <p>
-    We connect a controller directly to PhysTwin's Warp GPU simulator, generate policy data from
-    real and synthetic rollouts, and train policies that regulate contact force rather than simply
-    replaying or predicting it.
-  </p>
-
   <div class="video-stack">
     <figure>
       <video autoplay muted loop playsinline src="assets/force_control/videos/OBJ_rope_particles.mp4">
@@ -351,8 +345,7 @@
 
   <p class="lead">
     At each frame, the policy observes the object state and a goal force, then outputs a
-    <strong>6D gripper displacement</strong> to make the contact force match the goal. We test this
-    with both <strong>open-loop</strong> and <strong>closed-loop</strong> control.
+    <strong>6D gripper displacement</strong> to make the contact force match the goal.
   </p>
 
   <div class="card malak" style="margin: 1.5rem 0;">
@@ -474,8 +467,7 @@
   <p>
     One policy handles all materials, so we give it a two-number fingerprint:
     <strong>object stiffness</strong> and <strong>episode force scale</strong>. This tells the policy
-    how much motion is needed for a desired force change. The plot below shows that materials can
-    overlap in stiffness while separating by force scale.
+    how much motion is needed for a desired force change.
   </p>
 
   <figure class="figure" style="max-width:620px;margin-left:auto;margin-right:auto;">
@@ -635,8 +627,7 @@
     </li>
     <li>
       <span class="tag-step">eval</span>
-      The best BC rollout reaches <strong>err_ratio 0.22</strong>, meaning the average tracking
-      error is 22% of the goal magnitude.
+      The best BC rollout reaches <strong>err_ratio 0.22</strong>.
     </li>
   </ol>
 
@@ -692,8 +683,7 @@
 
   <h3>Ramp goal, phase by phase</h3>
   <p>
-    The falling edge is the hard part: the policy must recognize that the current force is high
-    while the next goal is lower, then reverse the gripper motion.
+    The falling edge is the hard part: the gripper must reverse while the current force is still high.
   </p>
 
   <div class="phase-grid">
@@ -749,11 +739,6 @@
       the closed-loop policy can sense and correct that drift.
     </li>
   </ul>
-
-  <p>
-    Feedback helps most at the edge of the training distribution, where the policy must recover
-    from its own mistakes rather than replay familiar behavior.
-  </p>
 
   <div class="figure-stack">
     <figure class="figure">
@@ -937,7 +922,8 @@
       A transformer adds memory by attending to recent frames and a short goal preview. This helps
       replay, but imitation alone worsens ramps because the stronger model compounds its own
       errors. Scheduled sampling fixes this by injecting action noise during training, teaching the
-      model to recover from small rollout mistakes.
+      model to recover from small rollout mistakes. PPO fine-tuning on top of this gave no further
+      gain, suggesting scheduled sampling already supplied the rollout robustness RL provided earlier.
     </p>
 
     <figure class="figure">
@@ -1031,20 +1017,9 @@
 
   </div>
 
-  <!-- ---- 7. RL on transformer ---- -->
-  <div class="exp-block negative">
-    <h4>Experiment 7: PPO Fine-Tuning the Transformer</h4>
-    <span class="metric">no improvement over the warm start</span>
-    <p>
-      PPO fine-tuning did not improve the noise-injected transformer. This suggests scheduled
-      sampling had already provided the rollout robustness that RL gave earlier, leaving little for
-      PPO to correct.
-    </p>
-  </div>
-
-  <!-- ---- 8. Ensemble ---- -->
+  <!-- ---- 7. Ensemble ---- -->
   <div class="exp-block">
-    <h4>Experiment 8: Goal-Aware Policy Ensemble</h4>
+    <h4>Experiment 7: Goal-Aware Policy Ensemble</h4>
     <span class="metric">14-case mean 0.66 · best single 0.71 · oracle 0.63</span>
     <p>
       The final system routes each rollout to the best specialist: transformer for replay-shaped
@@ -1144,9 +1119,9 @@
     policy transfer to a material it never saw during training?
   </p>
 
-  <!-- ---- 9. Progression + per-axis ---- -->
+  <!-- ---- 8. Progression + per-axis ---- -->
   <div class="exp-block">
-    <h4>Experiment 9: What Error Remains?</h4>
+    <h4>Experiment 8: What Error Remains?</h4>
     <span class="metric">Fy is hardest for every material · cloth ramp remains unsolved</span>
 
     <p>
@@ -1178,9 +1153,9 @@
     </figure>
   </div>
 
-  <!-- ---- 10. Held-out material ---- -->
+  <!-- ---- 9. Held-out material ---- -->
   <div class="exp-block">
-    <h4>Experiment 10: Held-Out Material Transfer</h4>
+    <h4>Experiment 9: Held-Out Material Transfer</h4>
     <span class="metric">single_lift_sloth transfers well at 0.47 · aggressive stretches degrade 2&ndash;4×</span>
 
     <p>
