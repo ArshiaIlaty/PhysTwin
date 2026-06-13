@@ -554,10 +554,10 @@ if __name__ == "__main__":
                         help="Run smoke test with synthetic data")
     parser.add_argument("--train", action="store_true",
                         help="Train on exported episodes CSV")
-    parser.add_argument("--episodes_csv", default="arshia_work/episodes.csv")
+    parser.add_argument("--episodes_csv", default="scenario_sweeps/episodes.csv")
     parser.add_argument("--stiffness_csv",
-                        default="arshia_work/analysis_results/stiffness_per_case.csv")
-    parser.add_argument("--out_dir", default="arshia_work/policy_models")
+                        default="scenario_sweeps/analysis_results/stiffness_per_case.csv")
+    parser.add_argument("--out_dir", default="scenario_sweeps/policy_models")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -572,7 +572,7 @@ if __name__ == "__main__":
         if not os.path.isfile(args.episodes_csv):
             raise SystemExit(
                 f"Missing {args.episodes_csv}. Run:\n"
-                f"  bash arshia_work/run_policy_data_pipeline.sh")
+                f"  bash scenario_sweeps/run_policy_data_pipeline.sh")
         if not os.path.isfile(args.stiffness_csv):
             raise SystemExit(
                 f"Missing {args.stiffness_csv}. Run stiffness extraction first.")
@@ -619,4 +619,4 @@ if __name__ == "__main__":
                 os.path.join(args.out_dir, "eval_baseline.csv"), index=False)
     else:
         print("Import this module, or run with --demo or --train.")
-        print("Full pipeline: bash arshia_work/run_policy_data_pipeline.sh")
+        print("Full pipeline: bash scenario_sweeps/run_policy_data_pipeline.sh")

@@ -231,7 +231,7 @@ def main() -> None:
     parser.add_argument("--n_ctrl_parts", type=int, default=None)
     parser.add_argument("--cfg_type", type=str, default=None, choices=["real", "cloth"])
     parser.add_argument("--material", type=str, default=None)
-    parser.add_argument("--out_dir", type=str, default="arshia_work/forward_force_results/videos")
+    parser.add_argument("--out_dir", type=str, default="scenario_sweeps/forward_force_results/videos")
     parser.add_argument("--T", type=int, default=120)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda:0")

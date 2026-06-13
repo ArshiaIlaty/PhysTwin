@@ -11,8 +11,8 @@ Example:
   python plot_open_closed_force_comparison.py
 
   python plot_open_closed_force_comparison.py \\
-    --closed_loop_csv arshia_work/malak_closed_loop_forces.csv \\
-    --out arshia_work/forward_force_results/figures/open_vs_closed_force.png
+    --closed_loop_csv scenario_sweeps/closed_loop_forces.csv \\
+    --out scenario_sweeps/forward_force_results/figures/open_vs_closed_force.png
 """
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model_dir",
-        default="arshia_work/forward_force_results/models_improved/seed_0",
+        default="scenario_sweeps/forward_force_results/models_improved/seed_0",
     )
     parser.add_argument("--dataset_dir", default="dataset_v2")
     parser.add_argument(
@@ -134,7 +134,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out",
-        default="arshia_work/forward_force_results/figures/open_vs_closed_force.png",
+        default="scenario_sweeps/forward_force_results/figures/open_vs_closed_force.png",
     )
     args = parser.parse_args()
 
