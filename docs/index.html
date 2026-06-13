@@ -989,16 +989,44 @@
   <!-- ---- 6. Privileged information ---- -->
   <div class="exp-block negative">
     <h4>Experiment 6: Removing Privileged Force-Scale Information</h4>
-    <span class="metric">rope replay degrades 0.46 → 0.84 without force scale</span>
+    <span class="metric">every replay group degrades · low-force cases blow up 3–150×</span>
     <p>
-      The descriptor's force-scale term is computed from the recorded episode, so on replay it
-      reveals the target trajectory magnitude in advance. Removing it degrades rope replay from 0.46 to
-      0.84; re-adding it restores performance, confirming the information advantage.
+      This is the honesty check on the
+      <a href="#setup">two-number descriptor</a> from the problem setup. Its force-scale term is
+      the mean of the recorded episode, so on a replay test that mean is approximately the goal
+      magnitude itself: the policy reads ahead. We hold stiffness fixed and remove that term, then
+      add it back, training one policy each way.
+    </p>
+
+    <div class="table-scroll card control">
+      <table>
+        <thead>
+          <tr><th>Replay group</th><th>With force scale</th><th>Stiffness only</th><th>Force scale re-added</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>rope (4 cases)</td><td>0.46</td><td>0.84</td><td>0.46</td></tr>
+          <tr><td>cloth (4 cases)</td><td>0.37</td><td>14.6&dagger;</td><td>0.38</td></tr>
+          <tr><td>sloth (3 cases)</td><td>0.68</td><td>0.83</td><td>0.71</td></tr>
+        </tbody>
+      </table>
+      <p class="caption" style="text-align:left;margin-top:0.5rem">
+        Removing the force-scale term degrades every replay group; adding it back restores the
+        original performance almost exactly. &dagger; The cloth jump is one low-force case
+        (single_lift_cloth) rising to err_ratio 55.9; the rest of cloth replay stays near 0.8.
+      </p>
+    </div>
+
+    <p>
+      The damage concentrates on gentle, low-force trajectories the policy can no longer recognize:
+      a gentle rope push rises from 0.77 to 2.36, and a low-force cloth lift from 0.38 to 55.9.
     </p>
 
     <div class="callout">
-      <strong>Interpretation:</strong> part of the descriptor's benefit came from giving the
-      policy the goal magnitude in advance. Stiffness is a real but weaker material signal.
+      <strong>Interpretation:</strong> part of the descriptor's replay benefit came from giving the
+      policy the goal magnitude in advance, not from material physics. Stiffness alone is the honest
+      material signal, but it is weaker, because force magnitude is set mostly by the command rather
+      than by stiffness. This is the same reason stiffness alone does not separate the materials in
+      the problem setup.
     </div>
 
   </div>
@@ -1053,7 +1081,7 @@
   </div>
 
   <!-- ---- Summary table ---- -->
-  <h3>Summary: err_ratio across policy variants</h3>
+  <h3>Summary: error ratio across policy variants</h3>
   <p>Lower is better. The best value per column is bold.</p>
   <div class="table-scroll card control">
     <table>
