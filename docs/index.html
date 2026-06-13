@@ -208,7 +208,7 @@
     <a class="brand" href="#">PhysTwin Force</a>
     <a href="#overview">Overview</a>
     <a href="#setup">Problem Setup</a>
-    <a href="#open-loop">Forward Model</a>
+    <a href="#open-loop">Physics Sweeps</a>
     <a href="#closed-loop">Closed Loop</a>
     <a href="#comparison">Open vs Closed</a>
     <a href="#experiments">Experiments</a>
@@ -463,44 +463,128 @@
   </figure>
 </section>
 
-<!-- ===================== ARSHIA: OPEN LOOP + FORWARD ML ===================== -->
+<!-- ===================== ARSHIA: PHYSICS SWEEPS + FORWARD MODEL ===================== -->
 <section id="open-loop">
-  <h2>Physics Sweeps &amp; Open Loop Control - Arshia</h2>
-  <p>
-    <strong>Teacher forcing:</strong> replay a fixed synthetic gripper script with no feedback.
-    The only variables are physics parameters: object stiffness (×0.5, ×1.0, ×2.0) and surface
-    proxies (concrete, grass, rubber). The motion is identical every time; we measure how peak
-    contact force responds.
+  <h2>Counterfactual Physics Sweeps</h2>
+
+  <p class="lead">
+    Malak's policies solve the <em>inverse</em> problem: given a force goal, what gripper motion
+    produces it? We first characterize the <em>forward</em> side of the same simulator — if the
+    motion is fixed and only physics knobs change, how does contact force respond?
   </p>
 
+  <p>
+    This is not the same as an <a href="#comparison">open-loop policy</a> (which still learns
+    state→action mappings but omits force feedback). Here there is no learned controller at all:
+    we replay a scripted gripper trajectory and vary object stiffness (×0.5, ×1.0, ×2.0) and
+    surface proxies (concrete, grass, rubber). The motion is identical every run; only the
+    spring-mass parameters change.
+  </p>
+
+  <div class="exp-block">
+    <h4>Result</h4>
+    <span class="metric">+40–90% peak force</span>
+    <p>
+      Doubling stiffness raises peak net contact force by 40–90% across cloth, rope, and plush,
+      for the same gripper script. Surface friction moves peak force less than stiffness does on
+      these motions — useful when interpreting why a policy trained on one material regime fails
+      on another.
+    </p>
+  </div>
+
+  <h3>Setup</h3>
+  <div class="card" style="border-left:4px solid #059669;padding:1rem 1.25rem;">
+    <div class="io-row">
+      <span class="io-label">Held fixed</span>
+      <span>Synthetic gripper script per material (<code>hold_release</code> for cloth/sloth, <code>linear_push</code> for rope)</span>
+      <span class="io-label">Varied</span>
+      <span>Object stiffness scale; surface friction/restitution proxy</span>
+      <span class="io-label">Measured</span>
+      <span>Per-frame net wrench from the simulator (same spring-force labels as §Problem Setup)</span>
+      <span class="io-label">Output</span>
+      <span>27 scenario trajectories in <code>dataset_scenarios/</code> (54 in the expanded grid)</span>
+    </div>
+  </div>
+
   <ol class="flow">
-    <li>Pick a donor case per material (cloth, rope, sloth) and a motion script (<code>hold_release</code> or <code>linear_push</code>).</li>
-    <li>Replay the identical controller trajectory while scaling stiffness and swapping surface friction and restitution.</li>
-    <li>Record the per-frame net wrench from the simulator: 27 scenarios (54 in the expanded grid).</li>
-    <li>Plot peak force against stiffness and force trajectories over time.</li>
+    <li>Donor case per material: cloth <code>single_clift_cloth_3</code>, rope <code>single_push_rope_1</code>, sloth <code>double_stretch_sloth</code>.</li>
+    <li>Replay the same controller path while scaling stiffness and swapping the surface preset.</li>
+    <li>Record |F|(t) and peak force; no new RGB-D video is collected.</li>
   </ol>
 
   <figure class="figure">
-    <img src="assets/arshia/peak_force_vs_stiffness.png" alt="Peak net force increases monotonically with stiffness for cloth, rope, and sloth">
-    <p class="caption"><strong>Main result:</strong> for a fixed motion, stiffer objects produce higher peak force (+40&ndash;90% across materials). Surface friction is secondary for these motions.</p>
+    <img src="assets/arshia/peak_force_vs_stiffness.png" alt="Peak net force vs stiffness for cloth, rope, and sloth">
+    <p class="caption">
+      Peak net force vs stiffness scale (concrete surface). The trend is monotonic in all three
+      materials; cloth shows the largest relative swing (+72% from k=0.5 to k=2.0).
+    </p>
   </figure>
 
   <div class="figure-grid">
     <figure class="figure">
       <img src="assets/arshia/peak_force_vs_surface.png" alt="Peak force by surface proxy">
-      <p class="caption">Peak force by surface, averaged across materials.</p>
+      <p class="caption">Peak force by surface (averaged over materials). Smaller spread than stiffness.</p>
     </figure>
     <figure class="figure">
-      <img src="assets/arshia/force_trajectories.png" alt="Force magnitude over time at baseline stiffness">
-      <p class="caption">|F|(t) at baseline stiffness, showing timing and shape.</p>
+      <img src="assets/arshia/force_trajectories.png" alt="Force magnitude over time">
+      <p class="caption">|F|(t) at baseline stiffness — not a single spike; full trajectory shape matters.</p>
     </figure>
   </div>
 
-  <h3>Forward model: deformation to force</h3>
+  <h3>Qualitative: same motion, different stiffness</h3>
   <p>
-    A per-material MLP maps the summary features to net wrench. We report two evaluation modes
-    that answer different generalization questions.
+    Side-by-side renders use the same script; only the object spring constants differ. Stiffer
+    objects deform less and build higher contact force during the hold phase.
   </p>
+  <div class="figure-grid">
+    <figure class="figure">
+      <video controls width="100%" preload="metadata">
+        <source src="assets/arshia/compare_cloth_k0.5_vs_k2.0.mp4" type="video/mp4">
+      </video>
+      <p class="caption">Cloth — k=0.5 (left) vs k=2.0 (right)</p>
+    </figure>
+    <figure class="figure">
+      <video controls width="100%" preload="metadata">
+        <source src="assets/arshia/compare_rope_k0.5_vs_k2.0.mp4" type="video/mp4">
+      </video>
+      <p class="caption">Rope — k=0.5 vs k=2.0</p>
+    </figure>
+    <figure class="figure">
+      <video controls width="100%" preload="metadata">
+        <source src="assets/arshia/compare_sloth_k0.5_vs_k2.0.mp4" type="video/mp4">
+      </video>
+      <p class="caption">Plush — k=0.5 vs k=2.0</p>
+    </figure>
+  </div>
+
+  <h3>Forward model: deformation → force</h3>
+  <p>
+    Separately, we train a per-material MLP to predict the simulator's net wrench from the same
+    35-dim particle statistics Malak's policies use (shape change, contact distance, velocity,
+    material tag). This asks whether force is recoverable from deformation alone — a sanity check
+    on the labels and features before investing in inverse control.
+  </p>
+
+  <figure class="figure">
+    <img src="assets/arshia/data_force_vs_features.png" alt="Sim force vs deformation features over time on single_clift_cloth_3">
+    <p class="caption">
+      Example trajectory (<code>single_clift_cloth_3</code>): sim force (red) tracks centroid
+      motion, bbox stretch, and contact distance — the patterns the MLP fits.
+    </p>
+  </figure>
+
+  <p>Two splits, two questions (same contiguous-block idea as the frame-level split in §Problem Setup):</p>
+
+  <div class="figure-grid">
+    <figure class="figure">
+      <img src="assets/arshia/split_cross_case.png" alt="cross_case train vs test cases">
+      <p class="caption"><strong>cross_case</strong> — entire manipulations held out (e.g. train three cloth cases, test <code>single_clift_cloth_1</code>).</p>
+    </figure>
+    <figure class="figure">
+      <img src="assets/arshia/split_random_block.png" alt="random_block contiguous held-out frames">
+      <p class="caption"><strong>random_block</strong> — ~20% contiguous frames held out per case. Not physics perturbations.</p>
+    </figure>
+  </div>
 
   <div class="table-scroll card arshia">
     <table>
@@ -508,7 +592,6 @@
         <tr>
           <th>Split</th>
           <th>Question</th>
-          <th>How it works</th>
           <th>Cloth R²</th>
           <th>Rope R²</th>
         </tr>
@@ -516,41 +599,40 @@
       <tbody>
         <tr>
           <td><strong>cross_case</strong></td>
-          <td>New manipulation held out?</td>
-          <td>Entire test case unseen during training</td>
+          <td>Generalize to a new manipulation?</td>
           <td><strong>0.62</strong></td>
           <td>negative*</td>
         </tr>
         <tr>
           <td><strong>random_block</strong></td>
-          <td>Unseen frames in the same trajectory?</td>
-          <td>Hold out ~20% contiguous frame blocks per case</td>
+          <td>Interpolate force within a seen trajectory?</td>
           <td><strong>0.90 ± 0.05</strong></td>
           <td><strong>0.59 ± 0.05</strong></td>
         </tr>
       </tbody>
     </table>
     <p class="caption" style="text-align:left;margin-top:0.75rem;">
-      *Rope cross-case trains on a single-hand push and tests on a two-hand case: a regime
-      mismatch rather than under-training.
+      *Rope cross-case: train on single-hand push, test on <code>rope_double_hand</code> — different
+      contact regime, not a training bug.
     </p>
   </div>
 
   <div class="figure-grid">
     <figure class="figure">
       <img src="assets/arshia/pred_vs_actual_cloth.png" alt="Predicted vs actual force for cloth">
-      <p class="caption">Cloth: predicted vs actual force (random_block split).</p>
+      <p class="caption">Cloth, random_block — predicted vs sim |F|.</p>
     </figure>
     <figure class="figure">
       <img src="assets/arshia/pred_vs_actual_rope.png" alt="Predicted vs actual force for rope">
-      <p class="caption">Rope: predicted vs actual force (random_block split).</p>
+      <p class="caption">Rope, random_block.</p>
     </figure>
   </div>
 
   <p>
-    The physics study above characterizes the <em>forward</em> direction (motion to force). The
-    remainder of this page addresses the <em>inverse</em> problem: given a desired force, what
-    gripper motion achieves it?
+    Cloth is the only material with enough cases for a meaningful cross-manipulation test. The
+    forward model and the stiffness sweeps bracket Malak's inverse policies: we know force is
+    predictable from deformation on cloth, and we know stiffness shifts the force landscape —
+    the control problem below operates in that landscape.
   </p>
 </section>
 

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scenario videos — preview</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    section { margin: 2rem 0; }
+    video { width: 100%; max-width: 900px; border-radius: 8px; background: #111; }
+    .caption { color: #555; font-size: 0.9rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Scenario comparison videos</h1>
+  <p>Open this page via a local port forward (see README in this folder).</p>
+
+  <section>
+    <h2>Side-by-side comparisons</h2>
+    <video controls src="compare_cloth_k0.5_vs_k2.0.mp4"></video>
+    <p class="caption">compare_cloth_k0.5_vs_k2.0.mp4</p>
+    <video controls src="compare_rope_k0.5_vs_k2.0.mp4"></video>
+    <p class="caption">compare_rope_k0.5_vs_k2.0.mp4</p>
+    <video controls src="compare_sloth_k0.5_vs_k2.0.mp4"></video>
+    <p class="caption">compare_sloth_k0.5_vs_k2.0.mp4</p>
+  </section>
+
+  <section>
+    <h2>Individual runs (k=0.5 vs k=2.0)</h2>
+    <video controls src="cloth__k0.5__concrete.mp4"></video>
+    <video controls src="cloth__k2.0__concrete.mp4"></video>
+    <video controls src="rope__k0.5__concrete.mp4"></video>
+    <video controls src="rope__k2.0__concrete.mp4"></video>
+    <video controls src="sloth__k0.5__concrete.mp4"></video>
+    <video controls src="sloth__k2.0__concrete.mp4"></video>
+  </section>
+</body>
+</html>
