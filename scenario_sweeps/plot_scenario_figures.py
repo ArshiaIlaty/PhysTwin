@@ -1,16 +1,16 @@
-"""plot_advisor_figures.py — visualizations addressing advisor feedback.
+"""plot_scenario_figures.py — visualizations addressing advisor feedback.
 
 Generates:
   - ground_truth_pipeline.png   — where force labels come from
   - feature_descriptor.png        — 35-dim input breakdown
   - data_force_vs_features.png    — look at the data (force + key features over time)
-  - split_random_block.png        — what random_block means (NOT physics perturbation)
+  - random_block_holdout_trajectories.png — exact |F|(t) with shaded hold-out block per trajectory
   - split_cross_case.png          — train vs test cases per material
   - prior_work_comparison.png     — novelty vs VLA / PhysTwin / GS-Dynamics
 
 Usage:
-  python arshia_work/plot_advisor_figures.py
-  python arshia_work/plot_advisor_figures.py --out_dir docs/assets/arshia
+  python scenario_sweeps/plot_scenario_figures.py
+  python scenario_sweeps/plot_scenario_figures.py --out_dir docs/assets/scenario_sweeps
 """
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
-from train_models import load_dataset, random_block_split
+from train_models import load_dataset
 
-OUT_DEFAULT = "arshia_work/forward_force_results/figures"
+OUT_DEFAULT = "scenario_sweeps/forward_force_results/figures"
 
 TYPE_NAMES = ["rope", "cloth", "sloth", "toy"]
 
@@ -188,13 +188,13 @@ def plot_data_force_vs_features(
     _save(fig, out_path)
 
 
-def plot_random_block_split(
+def plot_random_block_holdout_trajectories(
     dataset_dir: str,
     category: str,
     seed: int,
     out_path: str,
 ) -> None:
-    """Timeline diagram: contiguous held-out block per trajectory."""
+    """Plot sim |F|(t) per trajectory with the exact contiguous hold-out block shaded."""
     by_cat = load_dataset(
         dataset_dir, target_key="net", clip_percentile=99.0,
         exclude_cases=("single_push_sloth",), exclude_categories=("toy",),
@@ -202,48 +202,66 @@ def plot_random_block_split(
     )
     cases = by_cat.get(category, [])
     if not cases:
-        print(f"  skip random_block plot — no {category} cases")
+        print(f"  skip random_block trajectories — no {category} cases")
         return
 
     rng = np.random.RandomState(seed)
-    # Match train_models: one rng iterates all categories in sorted order
-    test_info = []
+    trajectories: list[tuple[str, np.ndarray, int, int]] = []
     for cat, cat_cases in by_cat.items():
-        _, test_cases = random_block_split(cat_cases, test_ratio=0.2, rng=rng)
-        if cat == category:
-            for tc in test_cases:
-                # parse case_name__test[start:end]
-                base = tc["case_name"].split("__test[")[0]
-                bracket = tc["case_name"].split("__test[")[1].rstrip("]")
-                start, end = map(int, bracket.split(":"))
-                orig = next(c for c in cat_cases if c["case_name"] == base)
-                test_info.append((base, len(orig["X"]), start, end))
+        for c in cat_cases:
+            T = len(c["X"])
+            if T < 5:
+                start, end = 0, 0
+            else:
+                block = max(1, int(round(T * 0.2)))
+                max_start = T - block
+                start = int(rng.randint(0, max_start + 1))
+                end = start + block
+            if cat == category:
+                force_mag = np.linalg.norm(c["y"], axis=1)
+                trajectories.append((c["case_name"], force_mag, start, end))
 
-    n = len(test_info)
-    fig, axes = plt.subplots(n, 1, figsize=(10, max(2.5, 1.2 * n)), squeeze=False)
-    for ax, (name, T, start, end) in zip(axes[:, 0], test_info):
-        train_mask = np.ones(T, dtype=bool)
-        train_mask[start:end] = False
-        for i in range(T):
-            color = "#fca5a5" if not train_mask[i] else "#86efac"
-            ax.bar(i, 1, color=color, width=1.0, edgecolor="none")
-        ax.set_xlim(-0.5, T - 0.5)
-        ax.set_ylim(0, 1.2)
-        ax.set_yticks([])
-        ax.set_ylabel(name.replace("_", "\n"), fontsize=7, rotation=0, ha="right", va="center")
-        ax.text(start + (end - start) / 2, 0.5, f"TEST\n[{start}:{end}]",
-                ha="center", va="center", fontsize=7, fontweight="bold", color="#991b1b")
+    n = len(trajectories)
+    fig, axes = plt.subplots(n, 1, figsize=(10, max(2.2, 2.0 * n)), squeeze=False)
+    for ax, (name, force_mag, start, end) in zip(axes[:, 0], trajectories):
+        t = np.arange(len(force_mag))
+        ax.plot(t, force_mag, color="#2563eb", lw=1.8)
+        ymax = float(force_mag.max()) if len(force_mag) else 1.0
+        if end > start:
+            ax.axvspan(start, end - 0.02, color="#fecaca", alpha=0.55)
+            ax.axvline(start, color="#dc2626", ls="--", lw=0.9, alpha=0.8)
+            ax.axvline(end - 1, color="#dc2626", ls="--", lw=0.9, alpha=0.8)
+            ax.text(
+                start + (end - start) / 2,
+                ymax * 0.92,
+                f"test [{start}:{end}]",
+                ha="center",
+                va="top",
+                fontsize=8,
+                color="#991b1b",
+                fontweight="bold",
+            )
+        ax.set_ylim(0, ymax * 1.08)
+        ax.set_ylabel("|F| (N)", fontsize=8)
+        ax.set_title(name.replace("_", " "), fontsize=9, loc="left", fontweight="bold")
+        ax.grid(True, alpha=0.25)
 
+    axes[-1, 0].set_xlabel("Frame (timestep in trajectory)")
     fig.suptitle(
-        f"random_block split (seed={seed}) — contiguous held-out frames, NOT physics perturbations",
-        fontsize=11, fontweight="bold", y=1.02)
-    fig.text(0.5, -0.02,
-             "Green = train frames  |  Red = test frames (~20% block per trajectory). "
-             "Question: can the MLP interpolate force within a seen manipulation?",
-             ha="center", fontsize=9, transform=fig.transFigure)
-    legend = [mpatches.Patch(color="#86efac", label="Train"),
-              mpatches.Patch(color="#fca5a5", label="Test (contiguous block)")]
-    fig.legend(handles=legend, loc="upper right", fontsize=8)
+        f"random_block evaluation ({category}, seed={seed}): contiguous held-out window on the real force trace",
+        fontsize=11,
+        fontweight="bold",
+        y=1.01,
+    )
+    fig.text(
+        0.5,
+        -0.01,
+        "Blue = sim ground-truth |F|(t). Red band = ~20% contiguous test frames; model trains on the rest. "
+        "Not a physics perturbation — same manipulation, different timesteps.",
+        ha="center",
+        fontsize=9,
+        transform=fig.transFigure,
+    )
     fig.tight_layout()
     _save(fig, out_path)
 
@@ -367,8 +385,8 @@ def main() -> None:
     plot_feature_descriptor(os.path.join(args.out_dir, "feature_descriptor.png"))
     plot_data_force_vs_features(args.dataset_dir, args.case_name,
                                 os.path.join(args.out_dir, "data_force_vs_features.png"))
-    plot_random_block_split(args.dataset_dir, "cloth", args.seed,
-                            os.path.join(args.out_dir, "split_random_block.png"))
+    plot_random_block_holdout_trajectories(args.dataset_dir, "cloth", args.seed,
+                            os.path.join(args.out_dir, "random_block_holdout_trajectories.png"))
     plot_cross_case_split(os.path.join(args.out_dir, "split_cross_case.png"))
     plot_prior_work_comparison(os.path.join(args.out_dir, "prior_work_comparison.png"))
     plot_open_loop_teacher_forcing(os.path.join(args.out_dir, "open_loop_teacher_forcing.png"))

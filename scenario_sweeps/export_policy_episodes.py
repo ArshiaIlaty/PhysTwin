@@ -99,7 +99,7 @@ def main() -> None:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("arshia_work/episodes.csv"),
+        default=Path("scenario_sweeps/episodes.csv"),
     )
     parser.add_argument("--max_rows", type=int, default=None)
     args = parser.parse_args()

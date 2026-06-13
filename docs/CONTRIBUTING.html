@@ -27,44 +27,30 @@
     <li>Push the <code>docs/</code> folder to <code>main</code>.</li>
     <li>Repo → <strong>Settings → Pages</strong>.</li>
     <li>Source: <strong>Deploy from branch</strong> → branch <code>main</code>, folder <code>/docs</code>.</li>
-    <li>Site URL: <code>https://arshiailaty.github.io/PhysTwin/</code></li>
+    <li>Site URL: your GitHub Pages URL for this repo (Settings → Pages).</li>
   </ol>
 
-  <h3>Sync Arshia’s figures after re-running experiments</h3>
+  <h3>Sync scenario-sweep figures after re-running experiments</h3>
   <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>bash docs/sync_assets.sh
 git add docs/
 git commit -m "Update website assets"
 git push</code></pre>
 
-  <h3>Malak — add closed-loop results</h3>
-  <div class="card malak">
+  <h3>Add closed-loop results</h3>
+  <div class="card control">
     <p><strong>1. Export rollout metrics</strong></p>
-    <p>After a closed-loop policy rollout, export per-step forces to CSV (columns: <code>target_force</code>, <code>achieved_force</code>). Template: <code>arshia_work/malak_closed_loop_forces_TEMPLATE.csv</code>.</p>
+    <p>After a closed-loop policy rollout, export per-step forces to CSV (columns: <code>target_force</code>, <code>achieved_force</code>). Template: <code>scenario_sweeps/closed_loop_forces_TEMPLATE.csv</code>.</p>
 
     <p><strong>2. Generate comparison figure</strong></p>
     <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>python plot_open_closed_force_comparison.py \
-  --closed_loop_csv arshia_work/malak_closed_loop_forces.csv</code></pre>
-    <p>Copy output to <code>docs/assets/malak/achieved_vs_target.png</code> (or update <code>open_vs_closed_force.png</code> in arshia assets).</p>
+  --closed_loop_csv scenario_sweeps/closed_loop_forces.csv</code></pre>
+    <p>Copy output to <code>docs/assets/force_control/achieved_vs_target.png</code>.</p>
 
     <p><strong>3. Add policy rollout video</strong></p>
-    <p>Render sim video of the policy driving the gripper. Save as <code>docs/assets/malak/policy_rollout.mp4</code>.</p>
+    <p>Render sim video of the policy driving the gripper. Save as H.264 MP4 under <code>docs/assets/force_control/videos/</code> (or run <code>docs/convert_videos_for_web.py</code>).</p>
 
     <p><strong>4. Update <code>docs/index.html</code></strong></p>
-    <p>Replace the placeholder <code>&lt;div class="placeholder"&gt;</code> blocks in the <code>#closed-loop</code> section with:</p>
-    <pre style="overflow-x:auto;font-size:0.88rem;background:#f3f4f6;padding:1rem;border-radius:8px;"><code>&lt;figure class="figure"&gt;
-  &lt;img src="assets/malak/achieved_vs_target.png" alt="Achieved vs target force"&gt;
-  &lt;p class="caption"&gt;Closed-loop force tracking on cloth.&lt;/p&gt;
-&lt;/figure&gt;
-
-&lt;figure class="figure"&gt;
-  &lt;video controls width="100%"&gt;
-    &lt;source src="assets/malak/policy_rollout.mp4" type="video/mp4"&gt;
-  &lt;/video&gt;
-  &lt;p class="caption"&gt;Policy rollout in PhysTwin.&lt;/p&gt;
-&lt;/figure&gt;</code></pre>
-
-    <p><strong>5. Add metrics table (optional)</strong></p>
-    <p>Insert a table under the closed-loop section with MAE, success rate, or replay vs novel-target results.</p>
+    <p>Add figures and videos under the <code>#closed-loop</code> section using paths under <code>assets/force_control/</code>.</p>
   </div>
 
   <h3>File layout</h3>
@@ -73,17 +59,18 @@ git push</code></pre>
 ├── CONTRIBUTING.html   # this page
 ├── css/style.css
 ├── js/main.js
-├── sync_assets.sh      # copy figures from arshia_work/
+├── sync_assets.sh      # copy figures from scenario_sweeps/
+├── convert_videos_for_web.py
 └── assets/
-    ├── arshia/         # forward force + scenario plots
-    ├── malak/          # closed-loop plots + videos (Malak adds here)
-    └── phystwin/       # teaser + force GIFs from upstream</code></pre>
+    ├── scenario_sweeps/  # counterfactual physics + forward ML plots/videos
+    ├── force_control/    # closed-loop policy plots + videos
+    └── phystwin/         # teaser + force GIFs from upstream</code></pre>
 
   <h3>Tips</h3>
   <ul>
     <li>Keep images under ~2 MB for fast loading; compress PNGs if needed.</li>
-    <li>Prefer MP4 (H.264) for videos; host large files on YouTube and embed if &gt;25 MB.</li>
-    <li>Both contributors can edit <code>docs/index.html</code> — use distinct sections (<code>#open-loop</code>, <code>#closed-loop</code>).</li>
+    <li>Use H.264 MP4 for videos (OpenCV <code>mp4v</code> does not play in browsers — run the converter script).</li>
+    <li>Preview locally: <code>cd docs && python3 -m http.server 8080</code>, then open in a browser (not the IDE file preview).</li>
   </ul>
 </section>
 

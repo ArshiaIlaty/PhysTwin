@@ -82,14 +82,14 @@ def main() -> None:
     parser.add_argument(
         "--model_dir",
         type=str,
-        default="arshia_work/forward_force_results/models_improved/seed_0",
+        default="scenario_sweeps/forward_force_results/models_improved/seed_0",
     )
     parser.add_argument("--dataset_dir", type=str, default="dataset_v2")
     parser.add_argument("--category", type=str, default="cloth")
     parser.add_argument(
         "--out",
         type=str,
-        default="arshia_work/forward_force_results/figures/pred_vs_actual_cloth.png",
+        default="scenario_sweeps/forward_force_results/figures/pred_vs_actual_cloth.png",
     )
     parser.add_argument("--clip_percentile", type=float, default=99.0)
     parser.add_argument("--exclude_cases", type=str, default="single_push_sloth")
